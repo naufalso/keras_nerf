@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-@tf.function
+@tf.function(reduce_retracing=True)
 def get_focal_from_fov(field_of_view: float, width: int):
     """
     Get focal length from field of view.

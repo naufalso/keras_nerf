@@ -9,6 +9,8 @@ wandb/*
 *.egg-info*
 *.eggs*
 *_debug*
+core
+model/*
 
 cache/*
 !cache/.gitkeep

@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-@tf.function
+@tf.function(reduce_retracing=True)
 def render_image_depth(rgb, sigma, sample_points, epsilon=1e-10):
     """
     Volumatric Rendering
@@ -35,7 +35,7 @@ def render_image_depth(rgb, sigma, sample_points, epsilon=1e-10):
     return image, depth, weights
 
 
-@tf.function
+@tf.function(reduce_retracing=True)
 def positional_encoding(inputs, pos_embedding_dim):
     # Include the original coordinate [x, y, z] (3 dims)
     positions = [inputs]
@@ -48,7 +48,7 @@ def positional_encoding(inputs, pos_embedding_dim):
     return tf.concat(positions, axis=-1)
 
 
-@tf.function
+@tf.function(reduce_retracing=True)
 def fine_hierarchical_sampling(mid_points, weights, n_samples):
     # add a small value to the weights to prevent it from nan
     weights += 1e-5
@@ -87,8 +87,8 @@ def fine_hierarchical_sampling(mid_points, weights, n_samples):
     return samples
 
 
-@tf.function
-def encode_position_and_directions(ray_origin, ray_direction, coarse_points, pos_embedding_dim):
+@tf.function(reduce_retracing=True)
+def encode_position_and_directions(ray_origin, ray_direction, coarse_points, pos_emb_xyz, pos_emb_dir):
     # Generate rays
     # Equation: ray(t) = ray_origin + t * ray_direction
     # Shape: [batch_size, image_height, image_width, n_samples, 3]
@@ -97,14 +97,14 @@ def encode_position_and_directions(ray_origin, ray_direction, coarse_points, pos
 
     # Positional encode the rays positions
     # Shape: [batch_size, image_height, image_width, n_samples, 3 + 2 * 3 * pos_embedding_dim]
-    rays_positions = positional_encoding(rays_positions, pos_embedding_dim)
+    rays_positions = positional_encoding(rays_positions, pos_emb_xyz)
 
     # Positional encode the ray directions
     # Shape: [batch_size, image_height, image_width, n_samples, 3 + 2 * 3 * pos_embedding_dim]
     rays_direction_shape = tf.shape(rays_positions[..., :3])
     rays_direction = tf.broadcast_to(
         ray_direction[..., None, :], shape=rays_direction_shape)
-    rays_direction = positional_encoding(rays_direction, pos_embedding_dim)
+    rays_direction = positional_encoding(rays_direction, pos_emb_dir)
 
     # Return the encoded rays
     return rays_positions, rays_direction

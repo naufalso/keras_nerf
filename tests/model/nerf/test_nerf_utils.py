@@ -15,7 +15,12 @@ def n_fine():
 
 
 @pytest.fixture
-def pos_embedding_dim():
+def pos_embedding_xyz():
+    return 10
+
+
+@pytest.fixture
+def pos_embedding_dir():
     return 10
 
 
@@ -33,15 +38,15 @@ def test_render_image_depth(n_coarse):
     assert weights.shape == (2, 100, 100, n_coarse)
 
 
-def test_positional_encoding(n_coarse, pos_embedding_dim):
+def test_positional_encoding(n_coarse, pos_embedding_xyz):
     # Generate random rays
     rays = tf.random.uniform(shape=(2, 100, 100, n_coarse, 3))
 
     # Positional encode the rays
-    pos_encoded_rays = positional_encoding(rays, pos_embedding_dim)
+    pos_encoded_rays = positional_encoding(rays, pos_embedding_xyz)
 
     assert pos_encoded_rays.shape == (
-        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_dim + 3)
+        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_xyz + 3)
 
 
 def test_fine_hierarchical_sampling(n_coarse, n_fine):
@@ -59,16 +64,16 @@ def test_fine_hierarchical_sampling(n_coarse, n_fine):
     assert fine_points.shape == (2, 100, 100, n_fine)
 
 
-def test_encode_position_and_directions(n_coarse, pos_embedding_dim):
+def test_encode_position_and_directions(n_coarse, pos_embedding_xyz, pos_embedding_dir):
     ray_origin = tf.random.uniform(shape=(2, 100, 100, 3))
     ray_direction = tf.random.uniform(shape=(2, 100, 100, 3))
     sample_points = tf.random.uniform(shape=(2, 100, 100, n_coarse))
 
     # Encode the position and directions
     pos_encoded_rays, pos_encoded_directions = encode_position_and_directions(
-        ray_origin, ray_direction, sample_points, pos_embedding_dim)
+        ray_origin, ray_direction, sample_points, pos_embedding_xyz, pos_embedding_dir)
 
     assert pos_encoded_rays.shape == (
-        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_dim + 3)
+        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_xyz + 3)
     assert pos_encoded_directions.shape == (
-        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_dim + 3)
+        2, 100, 100, n_coarse, 3 * 2 * pos_embedding_dir + 3)
