@@ -149,41 +149,24 @@ class NeRF(tf.keras.Model):
             encoded_ray_dir, (self.batch_size, self.image_width, self.image_height, n_sample, 3 * 2 * self.pos_emb_dir + 3))
         return encoded_ray, encoded_ray_dir
 
-    def train_step(self, inputs):
-        logging.debug('Training step')
+    def predict_and_render_images(self, rays):
         # Unpack the data.
-        images, rays = inputs
-        images = images[..., :3]
         ray_origin, ray_direction, coarse_points = rays
-
-        # Encode rays
         coarse_points = self.ensure_points_shape(coarse_points)
 
         # Encode coarse rays
-        logging.debug('Encoding coarse rays')
         coarse_rays, coarse_rays_direction = encode_position_and_directions(
             ray_origin, ray_direction, coarse_points, self.pos_emb_xyz, self.pos_emb_dir)
 
-        coarse_rays, coarse_rays_direction = self.ensure_encoded_shape(
-            coarse_rays, coarse_rays_direction, self.n_coarse)
+        # Compute the coarse rgb and sigma
+        coarse_rgb, coarse_sigma = self.predict_coarse(
+            coarse_rays, coarse_rays_direction)
 
-        # Keep track of the gradients for updating coarse model
-        logging.debug('Computing gradients for coarse model')
-        with tf.GradientTape() as coarse_tape:
-            coarse_rgb, coarse_sigma = self.predict_coarse(
-                coarse_rays, coarse_rays_direction)
-
-            # Render the coarse image and depth
-            coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
-                coarse_rgb, coarse_sigma, self.n_coarse)
-
-            logging.debug('Rendering coarse image')
-            coarse_image, coarse_depth, coarse_weights = render_image_depth(
-                coarse_rgb, coarse_sigma, coarse_points)
-
-            # Compute the photometric loss for the coarse model
-            logging.debug('Calculating coarse loss')
-            coarse_loss = self.loss(images, coarse_image)
+        # Render the coarse image and depth
+        coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
+            coarse_rgb, coarse_sigma, self.n_coarse)
+        coarse_image, coarse_depth, coarse_weights = render_image_depth(
+            coarse_rgb, coarse_sigma, coarse_points)
 
         # Compute middle points for fine sampling
         mid_points = 0.5 * (coarse_points[..., 1:] + coarse_points[..., :-1])
@@ -197,36 +180,49 @@ class NeRF(tf.keras.Model):
             tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
 
         # Encode the fine rays
-        logging.debug('Encoding fine rays')
         fine_rays, fine_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, fine_points, self.pos_emb_xyz, self.pos_emb_dir)
+            ray_origin, ray_direction, fine_points,  self.pos_emb_xyz, self.pos_emb_dir)
 
-        # Keep track of the gradients for updating fine model
-        logging.debug('Computing gradients for fine model')
-        with tf.GradientTape() as fine_tape:
-            fine_rgb, fine_sigma = self.predict_fine(
-                fine_rays, fine_rays_direction)
+        # Compute the fine rgb and sigma
+        fine_rgb, fine_sigma = self.predict_fine(
+            fine_rays, fine_rays_direction)
 
-            # Render the fine image and depth
-            fine_rgb, fine_sigma = self.ensure_mlp_shape(
-                fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
+        # Render the fine image and depth
+        fine_rgb, fine_sigma = self.ensure_mlp_shape(
+            fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
+        fine_image, fine_depth, fine_weights = render_image_depth(
+            fine_rgb, fine_sigma, fine_points)
 
-            logging.debug('Rendering fine image')
-            fine_image, fine_depth, fine_weights = render_image_depth(
-                fine_rgb, fine_sigma, fine_points)
+        return (coarse_image, coarse_depth, coarse_weights), (fine_image, fine_depth, fine_weights)
 
-            # Compute the photometric loss for fine model
-            logging.debug('Calculating fine loss')
+    def train_step(self, inputs):
+        images, rays = inputs
+        images = images[..., :3]
+
+        # Compute gradients for coarse and fine model
+        logging.debug('Computing gradients for coarse and fine model')
+        with tf.GradientTape(persistent=True) as tape:
+            # Watch the trainable variables.
+            tape.watch(self.coarse.trainable_variables)
+            tape.watch(self.fine.trainable_variables)
+
+            # Predict the coarse and fine images
+            coarse_results, fine_results = self.predict_and_render_images(rays)
+            (coarse_image, coarse_depth, coarse_weights) = coarse_results
+            (fine_image, fine_depth, fine_weights) = fine_results
+
+            # Compute the loss
+            coarse_loss = self.loss(images, coarse_image)
             fine_loss = self.loss(images, fine_image)
 
-        # Update the model weights using backpropagation
+         # Update the model weights using backpropagation
         logging.debug('Updating model weights')
-        coarse_gradients = coarse_tape.gradient(
+        coarse_gradients = tape.gradient(
             coarse_loss, self.coarse.trainable_variables)
         self.coarse_optimizer.apply_gradients(
             zip(coarse_gradients, self.coarse.trainable_variables))
 
-        fine_gradients = fine_tape.gradient(
+        fine_gradients = tape.gradient(
             fine_loss, self.fine.trainable_variables)
         self.fine_optimizer.apply_gradients(
             zip(fine_gradients, self.fine.trainable_variables))
@@ -263,65 +259,131 @@ class NeRF(tf.keras.Model):
             "fine_ssim": self.fine_ssim_metric.result(),
         }
 
+    # def train_step(self, inputs):
+    #     logging.debug('Training step')
+    #     # Unpack the data.
+    #     images, rays = inputs
+    #     images = images[..., :3]
+    #     ray_origin, ray_direction, coarse_points = rays
+
+    #     # Encode rays
+    #     coarse_points = self.ensure_points_shape(coarse_points)
+
+    #     # Encode coarse rays
+    #     coarse_rays, coarse_rays_direction = encode_position_and_directions(
+    #         ray_origin, ray_direction, coarse_points, self.pos_emb_xyz, self.pos_emb_dir)
+
+    #     coarse_rays, coarse_rays_direction = self.ensure_encoded_shape(
+    #         coarse_rays, coarse_rays_direction, self.n_coarse)
+
+    #     # Keep track of the gradients for updating coarse model
+    #     with tf.GradientTape() as coarse_tape:
+    #         coarse_rgb, coarse_sigma = self.predict_coarse(
+    #             coarse_rays, coarse_rays_direction)
+
+    #         # Render the coarse image and depth
+    #         coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
+    #             coarse_rgb, coarse_sigma, self.n_coarse)
+
+    #         coarse_image, coarse_depth, coarse_weights = render_image_depth(
+    #             coarse_rgb, coarse_sigma, coarse_points)
+
+    #         # Compute the photometric loss for the coarse model
+    #         coarse_loss = self.loss(images, coarse_image)
+
+    #     # Compute middle points for fine sampling
+    #     mid_points = 0.5 * (coarse_points[..., 1:] + coarse_points[..., :-1])
+
+    #     # Apply hierarchical sampling and get the fine samples for the fine rays
+    #     fine_points = fine_hierarchical_sampling(
+    #         mid_points, coarse_weights, self.n_fine)
+
+    #     # Combine the coarse and fine points
+    #     fine_points = tf.sort(
+    #         tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
+
+    #     # Encode the fine rays
+    #     logging.debug('Encoding fine rays')
+    #     fine_rays, fine_rays_direction = encode_position_and_directions(
+    #         ray_origin, ray_direction, fine_points, self.pos_emb_xyz, self.pos_emb_dir)
+
+    #     # Keep track of the gradients for updating fine model
+    #     logging.debug('Computing gradients for fine model')
+    #     with tf.GradientTape() as fine_tape:
+    #         fine_rgb, fine_sigma = self.predict_fine(
+    #             fine_rays, fine_rays_direction)
+
+    #         # Render the fine image and depth
+    #         fine_rgb, fine_sigma = self.ensure_mlp_shape(
+    #             fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
+
+    #         logging.debug('Rendering fine image')
+    #         fine_image, fine_depth, fine_weights = render_image_depth(
+    #             fine_rgb, fine_sigma, fine_points)
+
+    #         # Compute the photometric loss for fine model
+    #         logging.debug('Calculating fine loss')
+    #         fine_loss = self.loss(images, fine_image)
+
+    #     # Update the model weights using backpropagation
+    #     logging.debug('Updating model weights')
+    #     coarse_gradients = coarse_tape.gradient(
+    #         coarse_loss, self.coarse.trainable_variables)
+    #     self.coarse_optimizer.apply_gradients(
+    #         zip(coarse_gradients, self.coarse.trainable_variables))
+
+    #     fine_gradients = fine_tape.gradient(
+    #         fine_loss, self.fine.trainable_variables)
+    #     self.fine_optimizer.apply_gradients(
+    #         zip(fine_gradients, self.fine.trainable_variables))
+
+    #     # Compute the PSNR and SSIM metrics
+    #     logging.debug('Computing metrics')
+    #     coarse_psnr = tf.image.psnr(images, coarse_image, max_val=1.0)
+    #     coarse_ssim = tf.image.ssim(images, coarse_image, max_val=1.0)
+    #     fine_psnr = tf.image.psnr(images, fine_image, max_val=1.0)
+    #     fine_ssim = tf.image.ssim(images, fine_image, max_val=1.0)
+
+    #     # Update the loss and metrics trackers
+    #     logging.debug('Updating loss and metrics trackers')
+    #     self.coarse_loss_tracker.update_state(coarse_loss)
+    #     self.coarse_psnr_metric.update_state(coarse_psnr)
+    #     self.corase_ssim_metric.update_state(coarse_ssim)
+    #     self.fine_loss_tracker.update_state(fine_loss)
+    #     self.fine_psnr_metric.update_state(fine_psnr)
+    #     self.fine_ssim_metric.update_state(fine_ssim)
+
+    #     # Save last rendered images
+    #     self.last_train_coarse_image.assign(coarse_image)
+    #     self.last_train_fine_image.assign(fine_image)
+    #     self.last_train_coarse_depth.assign(coarse_depth)
+    #     self.last_train_fine_depth.assign(fine_depth)
+    #     self.last_train_image.assign(images)
+
+    #     return {
+    #         "coarse_loss": self.coarse_loss_tracker.result(),
+    #         "coarse_psnr": self.coarse_psnr_metric.result(),
+    #         "coarse_ssim": self.corase_ssim_metric.result(),
+    #         "fine_loss": self.fine_loss_tracker.result(),
+    #         "fine_psnr": self.fine_psnr_metric.result(),
+    #         "fine_ssim": self.fine_ssim_metric.result(),
+    #     }
+
     def test_step(self, inputs):
         logging.debug('Testing step')
         # Unpack the data.
         images, rays = inputs
         images = images[..., :3]
 
-        ray_origin, ray_direction, coarse_points = rays
-        coarse_points = self.ensure_points_shape(coarse_points)
-
-        # Encode coarse rays
-        logging.debug('Encoding coarse rays')
-        coarse_rays, coarse_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, coarse_points,  self.pos_emb_xyz, self.pos_emb_dir)
-
-        # Compute the coarse rgb and sigma
-        logging.debug('Computing coarse rgb and sigma')
-        coarse_rgb, coarse_sigma = self.predict_coarse(
-            coarse_rays, coarse_rays_direction)
-
-        # Render the coarse image and depth
-        coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
-            coarse_rgb, coarse_sigma, self.n_coarse)
-
-        logging.debug('Rendering coarse image')
-        coarse_image, coarse_depth, coarse_weights = render_image_depth(
-            coarse_rgb, coarse_sigma, coarse_points)
+        # Predict the coarse and fine images
+        logging.debug('Predicting coarse and fine images')
+        coarse_results, fine_results = self.predict_and_render_images(rays)
+        (coarse_image, coarse_depth, coarse_weights) = coarse_results
+        (fine_image, fine_depth, fine_weights) = fine_results
 
         # Compute the photometric loss for the coarse model
         logging.debug('Calculating coarse loss')
         coarse_loss = self.loss(images, coarse_image)
-
-        # Compute middle points for fine sampling
-        mid_points = 0.5 * (coarse_points[..., 1:] + coarse_points[..., :-1])
-
-        # Apply hierarchical sampling and get the fine samples for the fine rays
-        fine_points = fine_hierarchical_sampling(
-            mid_points, coarse_weights, self.n_fine)
-
-        # Combine the coarse and fine points
-        fine_points = tf.sort(
-            tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
-
-        # Encode the fine rays
-        logging.debug('Encoding fine rays')
-        fine_rays, fine_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, fine_points,  self.pos_emb_xyz, self.pos_emb_dir)
-
-        # Compute the fine rgb and sigma
-        logging.debug('Computing fine rgb and sigma')
-        fine_rgb, fine_sigma = self.predict_fine(
-            fine_rays, fine_rays_direction)
-
-        # Render the fine image and depth
-        fine_rgb, fine_sigma = self.ensure_mlp_shape(
-            fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
-
-        logging.debug('Rendering fine image')
-        fine_image, fine_depth, fine_weights = render_image_depth(
-            fine_rgb, fine_sigma, fine_points)
 
         # Compute the photometric loss for fine model
         logging.debug('Calculating fine loss')

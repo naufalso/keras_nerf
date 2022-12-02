@@ -32,6 +32,7 @@ def main():
     parser.add_argument('--near', type=float, default=2.0)
     parser.add_argument('--far', type=float, default=6.0)
     parser.add_argument('--fov', type=float, default=0.6911112070083618)
+    parser.add_argument('--eagerly', action='store_true')
 
     # NeRF Model Weights
     parser.add_argument('--model_dirs', type=str, default='model')
@@ -95,38 +96,18 @@ def main():
         ray_chunks=args.ray_chunks
     )
 
+    if args.eagerly:
+        nerf_predictions = nerf.predict_and_render_images
+    else:
+        nerf_predictions = tf.function(
+            nerf.predict_and_render_images, reduce_retracing=True)
+
     images = []
     depth = []
     for rays in tqdm(tf_ds_rays, total=360//args.output_freq, desc='Rendering Images'):
-        # logging.info(f"Rendering image for {rays['camera_matrix']}")
-        ray_origin, ray_direction, coarse_points = rays
-        coarse_rays, coarse_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, coarse_points, nerf.pos_emb_xyz, nerf.pos_emb_dir)
-
-        coarse_rgb, coarse_sigma = nerf.predict_coarse(
-            coarse_rays, coarse_rays_direction)
-
-        coarse_image, coarse_depth, coarse_weights = render_image_depth(
-            coarse_rgb, coarse_sigma, coarse_points)
-
-        # Compute the fine rays
-        fine_points = fine_hierarchical_sampling(
-            coarse_points, coarse_weights, nerf.n_fine)
-
-        # Combine the coarse and fine points
-        fine_points = tf.sort(
-            tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
-
-        # Encode the fine rays
-        fine_rays, fine_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, fine_points, nerf.pos_emb_xyz, nerf.pos_emb_dir)
-
-        # Split the rays into batches
-        fine_rgb, fine_sigma = nerf.predict_fine(
-            fine_rays, fine_rays_direction)
-
-        fine_image, fine_depth, fine_weights = render_image_depth(
-            fine_rgb, fine_sigma, fine_points)
+        coarse_results, fine_results = nerf_predictions(rays)
+        (coarse_image, coarse_depth, coarse_weights) = coarse_results
+        (fine_image, fine_depth, fine_weights) = fine_results
 
         images.append(fine_image.numpy()[0])
         depth.append(fine_depth.numpy()[0])

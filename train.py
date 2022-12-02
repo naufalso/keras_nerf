@@ -74,8 +74,8 @@ def main():
 
     with strategy.scope():
         # Create the model
-        if os.path.exists(os.path.join(args.model_dirs, "coarse")) and \
-                os.path.exists(os.path.join(args.model_dirs, "fine")):
+        if os.path.exists(os.path.join(args.model_dirs, args.name, "coarse")) and \
+                os.path.exists(os.path.join(args.model_dirs, args.name, "fine")):
             logging.info("Loading the latest model")
             model_path = args.model_dirs
         else:
@@ -115,7 +115,7 @@ def main():
         # Create the callbacks
         nerf_train_monitor = NeRFTrainMonitor(
             dataset=test_dataset,
-            log_dir=args.log_dir,
+            log_dir=os.path.join(args.log_dir, args.name),
             batch_size=args.batch_size,
             update_freq=args.log_freq
         )

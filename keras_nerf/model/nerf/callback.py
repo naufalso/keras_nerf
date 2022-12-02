@@ -31,11 +31,6 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
 
         for inputs in self.dataset.take(1):
             self.images, self.rays = inputs
-            self.ray_origin, self.ray_direction, self.coarse_points = self.rays
-            self.ray_origin, self.ray_direction, self.coarse_points = self.ray_origin[
-                :batch_size], self.ray_direction[:batch_size], self.coarse_points[:batch_size]
-            print(self.ray_origin.shape, self.ray_direction.shape,
-                  self.coarse_points.shape)
 
     def on_epoch_end(self, epoch, logs=None):
         self.coarse_log_list.append(logs['coarse_loss'])
@@ -44,33 +39,10 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
         self.val_fine_log_list.append(logs['val_fine_loss'])
 
         if epoch % self.update_freq == 0:
-            self.coarse_rays, self.coarse_rays_direction = encode_position_and_directions(
-                self.ray_origin, self.ray_direction, self.coarse_points, self.model.pos_emb_xyz, self.model.pos_emb_dir)
-
-            coarse_rgb, coarse_sigma = self.model.predict_coarse(
-                self.coarse_rays, self.coarse_rays_direction)
-
-            coarse_image, coarse_depth, coarse_weights = render_image_depth(
-                coarse_rgb, coarse_sigma, self.coarse_points)
-
-            # Compute the fine rays
-            fine_points = fine_hierarchical_sampling(
-                self.coarse_points, coarse_weights, self.model.n_fine)
-
-            # Combine the coarse and fine points
-            fine_points = tf.sort(
-                tf.concat([self.coarse_points, fine_points], axis=-1), axis=-1)
-
-            # Encode the fine rays
-            fine_rays, fine_rays_direction = encode_position_and_directions(
-                self.ray_origin, self.ray_direction, fine_points, self.model.pos_emb_xyz, self.model.pos_emb_dir)
-
-            # Split the rays into batches
-            fine_rgb, fine_sigma = self.model.predict_fine(
-                fine_rays, fine_rays_direction)
-
-            fine_image, fine_depth, fine_weights = render_image_depth(
-                fine_rgb, fine_sigma, fine_points)
+            coarse_results, fine_results = self.model.predict_and_render_images(
+                self.rays)
+            (coarse_image, coarse_depth, coarse_weights) = coarse_results
+            (fine_image, fine_depth, fine_weights) = fine_results
 
             # Plot the test images
             for i in range(self.batch_size):

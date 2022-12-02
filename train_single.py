@@ -33,12 +33,13 @@ def main():
     parser.add_argument('--far', type=float, default=6.0)
 
     # NeRF Training Parameters
+    parser.add_argument('--steps_per_epoch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=25)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_gpus', type=int, default=1)
-    parser.add_argument('--ray_chunks', type=int, default=64*64)
-    parser.add_argument('--eager', action='store_true')
+    parser.add_argument('--ray_chunks', type=int, default=1024)
+    parser.add_argument('--eagerly', action='store_true')
 
     # NeRF Logging Parameters
     parser.add_argument('--model_dirs', type=str, default='model')
@@ -46,6 +47,7 @@ def main():
     parser.add_argument('--log_freq', type=int, default=1)
 
     args = parser.parse_args()
+    logging.info(args)
 
     # Load the data
     dataset_loader = DatasetLoader(args.data_dir)
@@ -59,8 +61,8 @@ def main():
     )
 
     # Create the model
-    if os.path.exists(os.path.join(args.model_dirs, "coarse")) and \
-            os.path.exists(os.path.join(args.model_dirs, "fine")):
+    if os.path.exists(os.path.join(args.model_dirs, args.name, "coarse")) and \
+            os.path.exists(os.path.join(args.model_dirs, args.name, "fine")):
         logging.info("Loading the latest model")
         model_path = args.model_dirs
     else:
@@ -86,13 +88,13 @@ def main():
         image_width=args.img_wh,
         image_height=args.img_wh,
         ray_chunks=args.ray_chunks,
-        run_eagerly=args.eager
+        run_eagerly=args.eagerly
     )
 
     # Create the callbacks
     nerf_train_monitor = NeRFTrainMonitor(
         dataset=test_dataset,
-        log_dir=args.log_dir,
+        log_dir=os.path.join(args.log_dir, args.name),
         batch_size=args.batch_size,
         update_freq=args.log_freq
     )
@@ -100,8 +102,10 @@ def main():
     # Train the model
     nerf.fit(
         train_dataset,
+        steps_per_epoch=args.steps_per_epoch,
         epochs=args.num_epochs,
         validation_data=val_dataset,
+        validation_steps=args.steps_per_epoch // 5,
         callbacks=[nerf_train_monitor]
     )
 
