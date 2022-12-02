@@ -1,7 +1,7 @@
 import os
 import json
+import logging
 
-import numpy as np
 import tensorflow as tf
 
 from keras_nerf.data.utils import *
@@ -98,12 +98,14 @@ class DatasetLoader:
             tf_dataset = tf.data.Dataset.zip((tf_ds_images, tf_ds_rays))
             tf_dataset = (
                 tf_dataset
+                .repeat()
                 .shuffle(batch_size)
                 .batch(batch_size)
                 .prefetch(tf.data.experimental.AUTOTUNE)
             )
 
             tf_datasets.append(tf_dataset)
-            print(f"Loaded {subset} dataset. {len(image_paths)} images.")
+            logging.info(
+                f"Loaded {subset} dataset. {len(image_paths)} images.")
 
         return tf_datasets

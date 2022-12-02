@@ -56,3 +56,8 @@ def test_ray_generator_output_shape(rays_generator, camera_params):
     assert ray_origin.dtype == tf.float32
     assert ray_direction.dtype == tf.float32
     assert sample_points.dtype == tf.float32
+
+    rays = (ray_origin[..., None, :] +
+            ray_direction[..., None, :] * sample_points[..., None])
+
+    assert rays.shape == (100, 100, 32, 3)

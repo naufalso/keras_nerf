@@ -1,7 +1,29 @@
-# NeRF TensorFlow v2 Keras Re-Implementation [Work In Progress]
+# NeRF TensorFlow v2 Keras Re-Implementation
+[Work in Progress]
+
 Author: Naufal Suryanto
 
-Code Implementation Inspired by:
+## Quickstart
+[TBD]
+
+## Results
+[TBD]
+
+## Implementation and Features
+
+### NeRF Model
+- [x] Positional Encoding
+- [x] Coarse and Fine Model with Hierarchical Sampling
+
+### Training Supports
+- [x] Single or multiple GPU training
+- [x] Split the MLP prediction into chunks for fitting GPU memory
+- [x] [Default] Use graph execution with tf.function for better performance (but may take longer initialization)
+- [x] [Optional] Use eager execution for faster initialization (Include --eagerly option when run the code)
+
+### Etc.
+[TBD]
+### Code Implementation Inspired by
 - [Official Keras Code Example for NeRF](https://keras.io/examples/vision/nerf)
 - [Awesome NeRF PyTorch Implementation](https://github.com/kakaobrain/NeRF-Factory)
 - [NeRF Implementation Tutorial by PyImageSearch - Part 1](https://pyimagesearch.com/2021/11/10/computer-graphics-and-deep-learning-with-nerf-using-tensorflow-and-keras-part-1/)
