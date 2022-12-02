@@ -118,8 +118,9 @@ class RaysGenerator:
         # Add noise to the sample points
 
         noise = (tf.random.uniform(shape=[self.image_width,
-                 self.image_height, self.n_sample], dtype=tf.float32) *
+                 self.image_height, self.n_sample]) *
                  (self.far - self.near) / self.n_sample_fl)
+        # tf.print(noise)
 
         sample_points = sample_points + noise  # Shape: [H, W, N]
 

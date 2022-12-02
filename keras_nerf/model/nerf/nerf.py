@@ -1,4 +1,5 @@
 import logging
+import os
 import tensorflow as tf
 
 from keras_nerf.model.nerf.mlp import NeRFMLP, build_nerf_mlp
@@ -6,7 +7,10 @@ from keras_nerf.model.nerf.utils import render_image_depth, encode_position_and_
 
 
 class NeRF(tf.keras.Model):
-    def __init__(self, n_coarse: int = 64, n_fine: int = 128, pos_emb_xyz: int = 10, pos_emb_dir: int = 4, n_layers: int = 8, dense_units: int = 256, skip_layer=4, **kwargs):
+    def __init__(self, n_coarse: int = 64, n_fine: int = 128,
+                 pos_emb_xyz: int = 10, pos_emb_dir: int = 4,
+                 n_layers: int = 8, dense_units: int = 256,
+                 skip_layer=4, model_path: str = None,  **kwargs):
         super(NeRF, self).__init__(**kwargs)
         logging.info('Building NeRF model')
         logging.info(
@@ -21,11 +25,19 @@ class NeRF(tf.keras.Model):
         self.n_layers = n_layers
         self.dense_units = dense_units
         self.skip_layer = skip_layer
+        self.model_path = model_path
 
-        self.coarse = NeRFMLP(
-            n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, name='coarse_nerf')
-        self.fine = NeRFMLP(
-            n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, name='fine_nerf')
+        if model_path is None:
+            self.coarse = NeRFMLP(
+                n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, name='coarse_nerf')
+            self.fine = NeRFMLP(
+                n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, name='fine_nerf')
+        else:
+            self.coarse = tf.keras.models.load_model(
+                os.path.join(model_path, f"coarse"), compile=False)
+            self.fine = tf.keras.models.load_model(
+                os.path.join(model_path, f"fine"), compile=False)
+
         # self.coarse = build_nerf_mlp(
         #     n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, pos_emb_xyz=pos_emb_xyz, pos_emb_dir=pos_emb_dir, name='coarse_nerf')
         # self.fine = build_nerf_mlp(
@@ -66,6 +78,17 @@ class NeRF(tf.keras.Model):
         self.fine_loss_tracker = tf.keras.metrics.Mean(name="fine_loss")
         self.fine_psnr_metric = tf.keras.metrics.Mean(name="fine_psnr")
         self.fine_ssim_metric = tf.keras.metrics.Mean(name="fine_ssim")
+
+        self.last_train_coarse_image = tf.Variable(
+            tf.zeros((self.batch_size, self.image_height, self.image_width, 3)))
+        self.last_train_fine_image = tf.Variable(
+            tf.zeros((self.batch_size, self.image_height, self.image_width, 3)))
+        self.last_train_coarse_depth = tf.Variable(
+            tf.zeros((self.batch_size, self.image_height, self.image_width)))
+        self.last_train_fine_depth = tf.Variable(
+            tf.zeros((self.batch_size, self.image_height, self.image_width)))
+        self.last_train_image = tf.Variable(
+            tf.zeros((self.batch_size, self.image_height, self.image_width, 3)))
 
     def get_sequential_model_prediction(self, model, n_sample):
         ray_size = self.batch_size * self.image_width * self.image_height
@@ -133,6 +156,7 @@ class NeRF(tf.keras.Model):
         images = images[..., :3]
         ray_origin, ray_direction, coarse_points = rays
 
+        # Encode rays
         coarse_points = self.ensure_points_shape(coarse_points)
 
         # Encode coarse rays
@@ -222,6 +246,13 @@ class NeRF(tf.keras.Model):
         self.fine_loss_tracker.update_state(fine_loss)
         self.fine_psnr_metric.update_state(fine_psnr)
         self.fine_ssim_metric.update_state(fine_ssim)
+
+        # Save last rendered images
+        self.last_train_coarse_image.assign(coarse_image)
+        self.last_train_fine_image.assign(fine_image)
+        self.last_train_coarse_depth.assign(coarse_depth)
+        self.last_train_fine_depth.assign(fine_depth)
+        self.last_train_image.assign(images)
 
         return {
             "coarse_loss": self.coarse_loss_tracker.result(),

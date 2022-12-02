@@ -1,7 +1,7 @@
 import os
 import argparse
 import tensorflow as tf
-
+import logging
 
 from keras_nerf.model.nerf.nerf import NeRF
 from keras_nerf.model.nerf.callback import NeRFTrainMonitor
@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--far', type=float, default=6.0)
 
     # NeRF Training Parameters
+    parser.add_argument('--steps_per_epoch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=25)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
@@ -71,10 +72,15 @@ def main():
     # assert args.batch_size % strategy.num_replicas_in_sync == 0, \
     #     'Batch size must be divisible by number of GPUs'
 
-    image_area = tf.constant(args.img_wh * args.img_wh, tf.float32)
-
     with strategy.scope():
         # Create the model
+        if os.path.exists(os.path.join(args.model_dirs, "coarse")) and \
+                os.path.exists(os.path.join(args.model_dirs, "fine")):
+            logging.info("Loading the latest model")
+            model_path = args.model_dirs
+        else:
+            model_path = None
+
         nerf = NeRF(
             n_coarse=args.num_coarse_samples,
             n_fine=args.num_fine_samples,
@@ -83,6 +89,7 @@ def main():
             n_layers=args.num_layers,
             dense_units=args.num_units,
             skip_layer=args.skip_layer,
+            model_path=model_path
         )
 
         loss_fn = tf.keras.losses.MeanSquaredError(
@@ -116,19 +123,23 @@ def main():
     # Train the model
     nerf.fit(
         train_dataset,
+        steps_per_epoch=args.steps_per_epoch,
         epochs=args.num_epochs,
         validation_data=val_dataset,
+        validation_steps=args.steps_per_epoch // 5,
         callbacks=[nerf_train_monitor]
     )
 
     # Save the model
     os.makedirs(args.model_dirs, exist_ok=True)
-    coarse_save_path = os.path.join(args.model_dirs, f'{args.name}_coarse')
-    fine_save_path = os.path.join(args.model_dirs, f'{args.name}_fine')
+    coarse_save_path = os.path.join(args.model_dirs, args.name, 'coarse')
+    fine_save_path = os.path.join(args.model_dirs, args.name, 'fine')
 
     nerf.coarse.save(coarse_save_path)
     nerf.fine.save(fine_save_path)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
     main()

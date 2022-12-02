@@ -2,7 +2,7 @@ import tensorflow as tf
 
 
 class NeRFMLP(tf.keras.Model):
-    def __init__(self, n_layers: int = 8, dense_units: int = 256, skip_layer=4, **kwargs):
+    def __init__(self, n_layers: int = 8, dense_units: int = 256, skip_layer=4, initializer='glorot_uniform', ** kwargs):
         super(NeRFMLP, self).__init__(**kwargs)
         self.n_layers = n_layers
         self.dense_units = dense_units
@@ -10,21 +10,21 @@ class NeRFMLP(tf.keras.Model):
 
         self.mlp_layers = [
             tf.keras.layers.Dense(
-                units=dense_units, activation='relu', name=f"layer_{i}")
+                units=dense_units, activation='relu', name=f"layer_{i}", kernel_initializer=initializer)
             for i in range(n_layers)
         ]
 
         self.sigma = tf.keras.layers.Dense(
-            units=1, activation='relu', name="sigma")
+            units=1, activation='relu', name="sigma", kernel_initializer=initializer)
 
         self.features = tf.keras.layers.Dense(
-            units=dense_units, name='features')
+            units=dense_units, name='features', kernel_initializer=initializer)
 
         self.rgb_features = tf.keras.layers.Dense(
-            units=dense_units//2, name='rgb_features')
+            units=dense_units//2, name='rgb_features', kernel_initializer=initializer)
 
         self.rgb = tf.keras.layers.Dense(
-            units=3, activation='sigmoid', name='rgb')
+            units=3, activation='sigmoid', name='rgb', kernel_initializer=initializer)
 
     def call(self, inputs):
         ray_coordinate_inputs, direction_inputs = inputs

@@ -11,6 +11,7 @@ wandb/*
 *_debug*
 core
 model/*
+output/*
 
 cache/*
 !cache/.gitkeep

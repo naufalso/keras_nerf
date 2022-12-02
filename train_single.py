@@ -59,6 +59,13 @@ def main():
     )
 
     # Create the model
+    if os.path.exists(os.path.join(args.model_dirs, "coarse")) and \
+            os.path.exists(os.path.join(args.model_dirs, "fine")):
+        logging.info("Loading the latest model")
+        model_path = args.model_dirs
+    else:
+        model_path = None
+
     nerf = NeRF(
         n_coarse=args.num_coarse_samples,
         n_fine=args.num_fine_samples,
@@ -67,6 +74,7 @@ def main():
         n_layers=args.num_layers,
         dense_units=args.num_units,
         skip_layer=args.skip_layer,
+        model_path=model_path
     )
 
     # Compile the model
@@ -99,8 +107,8 @@ def main():
 
     # Save the model
     os.makedirs(args.model_dirs, exist_ok=True)
-    coarse_save_path = os.path.join(args.model_dirs, f'{args.name}_coarse')
-    fine_save_path = os.path.join(args.model_dirs, f'{args.name}_fine')
+    coarse_save_path = os.path.join(args.model_dirs, args.name, 'coarse')
+    fine_save_path = os.path.join(args.model_dirs, args.name, 'fine')
 
     nerf.coarse.save(coarse_save_path)
     nerf.fine.save(fine_save_path)
