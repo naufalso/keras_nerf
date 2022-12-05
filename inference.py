@@ -6,7 +6,6 @@ from tqdm import tqdm
 import imageio
 
 from keras_nerf.model.nerf.nerf import NeRF
-from keras_nerf.model.nerf.utils import positional_encoding, encode_position_and_directions, render_image_depth, fine_hierarchical_sampling
 from keras_nerf.data.utils import get_focal_from_fov, pose_spherical
 from keras_nerf.data.rays import RaysGenerator
 
@@ -101,6 +100,9 @@ def main():
     else:
         nerf_predictions = tf.function(
             nerf.predict_and_render_images, reduce_retracing=True)
+
+    nerf.coarse.summary()
+    nerf.fine.summary()
 
     images = []
     depth = []

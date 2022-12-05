@@ -3,8 +3,6 @@ import logging
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from keras_nerf.model.nerf.utils import render_image_depth, encode_position_and_directions, fine_hierarchical_sampling
-
 
 class NeRFTrainMonitor(tf.keras.callbacks.Callback):
     def __init__(self, dataset: tf.data.Dataset, log_dir: str, batch_size: int, update_freq: int = 1, **kwargs):

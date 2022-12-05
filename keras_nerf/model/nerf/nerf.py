@@ -2,8 +2,8 @@ import logging
 import os
 import tensorflow as tf
 
-from keras_nerf.model.nerf.mlp import NeRFMLP, build_nerf_mlp
-from keras_nerf.model.nerf.utils import render_image_depth, encode_position_and_directions, fine_hierarchical_sampling
+from keras_nerf.model.nerf.mlp import NeRFMLP
+from keras_nerf.model.nerf.utils import NeRFUtils
 
 
 class NeRF(tf.keras.Model):
@@ -37,11 +37,6 @@ class NeRF(tf.keras.Model):
                 os.path.join(model_path, f"coarse"), compile=False)
             self.fine = tf.keras.models.load_model(
                 os.path.join(model_path, f"fine"), compile=False)
-
-        # self.coarse = build_nerf_mlp(
-        #     n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, pos_emb_xyz=pos_emb_xyz, pos_emb_dir=pos_emb_dir, name='coarse_nerf')
-        # self.fine = build_nerf_mlp(
-        #     n_layers=n_layers, dense_units=dense_units, skip_layer=skip_layer, pos_emb_xyz=pos_emb_xyz, pos_emb_dir=pos_emb_dir, name='fine_nerf')
         self.epsilon = 1e-10
 
     def compile(self, optimizer, loss, batch_size, image_height, image_width, ray_chunks, **kwargs):
@@ -56,18 +51,56 @@ class NeRF(tf.keras.Model):
         self.batch_size = batch_size
         self.image_height = image_height
         self.image_width = image_width
+
         self.ray_chunks = ray_chunks
+        self.num_rays = batch_size * image_height * image_width
 
-        assert (self.image_height *
-                self.image_width) % self.ray_chunks == 0, 'ray_chunks must be a divisor of the number of rays'
-        assert (self.image_height * self.image_width
-                ) % self.ray_chunks == 0, 'ray_chunks must be a divisor of the number of rays'
+        if self.ray_chunks >= self.num_rays:
+            self.ray_chunks = self.num_rays
+            logging.info(
+                f"ray_chunks is greater than num_rays, setting ray_chunks to num_rays: {self.num_rays}")
 
-        self.predict_coarse = self.get_sequential_model_prediction(
-            tf.function(self.coarse, reduce_retracing=True), self.n_coarse)
-        self.predict_fine = self.get_sequential_model_prediction(
-            tf.function(self.fine, reduce_retracing=True), self.n_coarse + self.n_fine)
+        assert self.num_rays % self.ray_chunks == 0, 'ray_chunks must be a divisor of the number of rays'
 
+        self.sequential_chunks = self.num_rays // ray_chunks
+        logging.info(
+            f'NeRF Sequential Model Prediction: num_rays={self.num_rays}, sequential_chunks={self.sequential_chunks}')
+
+        self.nerf_utils = NeRFUtils(
+            self.batch_size, self.image_height, self.image_width, self.ray_chunks
+        )
+        self._build_model_and_trainable_variables()
+        self._initialize_optimizer_and_metrics(optimizer)
+        self._initialize_last_prediction_samples()
+
+    def _build_model_and_trainable_variables(self):
+        # Build the coarse and fine models
+        self.coarse.build(input_shape=[
+            [self.ray_chunks, self.n_coarse, 3 * 2 * self.pos_emb_xyz + 3],
+            [self.ray_chunks, self.n_coarse, 3 * 2 * self.pos_emb_dir + 3]]
+        )
+
+        self.fine.build(input_shape=[
+            [self.ray_chunks, self.n_coarse + self.n_fine,
+                3 * 2 * self.pos_emb_xyz + 3],
+            [self.ray_chunks, self.n_coarse + self.n_fine, 3 * 2 * self.pos_emb_dir + 3]]
+        )
+
+        # Initialize gradients accumulators for the coarse and fine models
+        self.coarse_gradients_accumulator = [
+            tf.Variable(tf.zeros_like(var), trainable=False)
+            for var in self.coarse.trainable_variables
+        ]
+        self.fine_gradients_accumulator = [
+            tf.Variable(tf.zeros_like(var), trainable=False)
+            for var in self.fine.trainable_variables
+        ]
+
+        # Initialize the loss accumulator
+        self.coarse_loss_accumulator = tf.Variable(0.0, trainable=False)
+        self.fine_loss_accumulator = tf.Variable(0.0, trainable=False)
+
+    def _initialize_optimizer_and_metrics(self, optimizer):
         self.coarse_optimizer = tf.keras.optimizers.get(optimizer)
         self.fine_optimizer = tf.keras.optimizers.get(optimizer)
 
@@ -79,6 +112,7 @@ class NeRF(tf.keras.Model):
         self.fine_psnr_metric = tf.keras.metrics.Mean(name="fine_psnr")
         self.fine_ssim_metric = tf.keras.metrics.Mean(name="fine_ssim")
 
+    def _initialize_last_prediction_samples(self):
         self.last_train_coarse_image = tf.Variable(
             tf.zeros((self.batch_size, self.image_height, self.image_width, 3)))
         self.last_train_fine_image = tf.Variable(
@@ -90,142 +124,208 @@ class NeRF(tf.keras.Model):
         self.last_train_image = tf.Variable(
             tf.zeros((self.batch_size, self.image_height, self.image_width, 3)))
 
-    def get_sequential_model_prediction(self, model, n_sample):
-        ray_size = self.batch_size * self.image_width * self.image_height
-        parallel_chunks = ray_size // self.ray_chunks
+    def predict_and_render_chunk(self, ray_chunks):
+        ray_origin_chunk, ray_direction_chunk, coarse_points_chunk = ray_chunks
+        # Encode coarse rays
+        coarse_rays_chunk, coarse_rays_direction_chunk = self.nerf_utils.encode_position_and_directions(
+            ray_origin_chunk, ray_direction_chunk, coarse_points_chunk, self.pos_emb_xyz, self.pos_emb_dir)
 
-        logging.info(
-            f'NeRF Sequential Model Prediction: ray_size={ray_size}, parallel_chunks={parallel_chunks}')
+        coarse_rays_chunk = tf.ensure_shape(
+            coarse_rays_chunk, [self.ray_chunks, self.n_coarse, 3 * 2 * self.pos_emb_xyz + 3])
+        coarse_rays_direction_chunk = tf.ensure_shape(
+            coarse_rays_direction_chunk, [self.ray_chunks, self.n_coarse, 3 * 2 * self.pos_emb_dir + 3])
 
-        def predict_ray_sequentially(rays, rays_direction):
-            flat_rays = tf.reshape(
-                rays, (ray_size, n_sample, 3 * 2 * self.pos_emb_xyz + 3))
-            flat_rays_direction = tf.reshape(
-                rays_direction, (ray_size, n_sample, 3 * 2 * self.pos_emb_dir + 3))
+        # Predict coarse rays
+        coarse_rgb_chunk, coarse_sigma_chunk = self.coarse(
+            (coarse_rays_chunk, coarse_rays_direction_chunk))
 
-            rgb_array = tf.TensorArray(tf.float32, size=parallel_chunks)
-            sigma_array = tf.TensorArray(tf.float32, size=parallel_chunks)
+        # Render coarse image and depth
+        coarse_image_chunk, coarse_depth_chunk, coarse_weights_chunk = self.nerf_utils.render_image_depth_chunk(
+            coarse_rgb_chunk, coarse_sigma_chunk, coarse_points_chunk
+        )
 
-            # Split rays into chunks
-            for i in range(parallel_chunks):
-                start_chunk = i * self.ray_chunks
-                end_chunk = (i + 1) * self.ray_chunks
+        # Compute middle points for fine sampling
+        mid_points_chunk = 0.5 * \
+            (coarse_points_chunk[..., 1:] + coarse_points_chunk[..., :-1])
 
-                rgb, sigma = model(
-                    (flat_rays[start_chunk:end_chunk, ...], flat_rays_direction[start_chunk:end_chunk, ...]))
+        # Apply hierarchical sampling and get the fine samples for the fine rays
+        fine_points_chunk = self.nerf_utils.fine_hierarchical_sampling_chunk(
+            mid_points_chunk, coarse_weights_chunk, self.n_fine)
 
-                rgb_array = rgb_array.write(i, rgb)
-                sigma_array = sigma_array.write(i, sigma)
+        # Combine the coarse and fine points
+        fine_points_chunk = tf.sort(
+            tf.concat([coarse_points_chunk, fine_points_chunk], axis=-1), axis=-1)
 
-            # Revert to original shape
-            rgb = tf.reshape(
-                rgb_array.stack(), (self.batch_size, self.image_width, self.image_height, n_sample, 3))
-            sigma = tf.reshape(
-                sigma_array.stack(), (self.batch_size, self.image_width, self.image_height, n_sample, 1))
+        # Encode the fine rays
+        fine_rays_chunk, fine_rays_direction_chunk = self.nerf_utils.encode_position_and_directions(
+            ray_origin_chunk, ray_direction_chunk, fine_points_chunk,  self.pos_emb_xyz, self.pos_emb_dir)
 
-            return rgb, sigma
+        # Compute the fine rgb and sigma
+        fine_rgb_chunk, fine_sigma_chunk = self.fine(
+            (fine_rays_chunk, fine_rays_direction_chunk))
 
-        return predict_ray_sequentially
+        # Render the fine image and depth
+        fine_image_chunk, fine_depth_chunk, fine_weights_chunk = self.nerf_utils.render_image_depth_chunk(
+            fine_rgb_chunk, fine_sigma_chunk, fine_points_chunk)
 
-    @tf.function(reduce_retracing=True)
-    def ensure_mlp_shape(self, rgb, sigma, n_points):
-        rgb = tf.ensure_shape(
-            rgb, (self.batch_size, self.image_width, self.image_height, n_points, 3))
-        sigma = tf.ensure_shape(
-            sigma, (self.batch_size, self.image_width, self.image_height, n_points, 1))
-        return rgb, sigma
-
-    @tf.function(reduce_retracing=True)
-    def ensure_points_shape(self, points):
-        points = tf.ensure_shape(
-            points, (self.batch_size, self.image_width, self.image_height, self.n_coarse))
-        return points
-
-    @tf.function(reduce_retracing=True)
-    def ensure_encoded_shape(self, encoded_ray, encoded_ray_dir, n_sample):
-        encoded_ray = tf.ensure_shape(
-            encoded_ray, (self.batch_size, self.image_width, self.image_height, n_sample, 3 * 2 * self.pos_emb_xyz + 3))
-        encoded_ray_dir = tf.ensure_shape(
-            encoded_ray_dir, (self.batch_size, self.image_width, self.image_height, n_sample, 3 * 2 * self.pos_emb_dir + 3))
-        return encoded_ray, encoded_ray_dir
+        return (coarse_image_chunk, coarse_depth_chunk, coarse_weights_chunk), (fine_image_chunk, fine_depth_chunk, fine_weights_chunk)
 
     def predict_and_render_images(self, rays):
         # Unpack the data.
         ray_origin, ray_direction, coarse_points = rays
-        coarse_points = self.ensure_points_shape(coarse_points)
 
-        # Encode coarse rays
-        coarse_rays, coarse_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, coarse_points, self.pos_emb_xyz, self.pos_emb_dir)
+        ray_origin_flat = tf.reshape(ray_origin, (self.num_rays, 3))
+        ray_direction_flat = tf.reshape(ray_direction, (self.num_rays, 3))
+        coarse_points_flat = tf.reshape(
+            coarse_points, (self.num_rays, self.n_coarse))
 
-        # Compute the coarse rgb and sigma
-        coarse_rgb, coarse_sigma = self.predict_coarse(
-            coarse_rays, coarse_rays_direction)
+        coarse_image_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        coarse_depth_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        coarse_weight_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        fine_image_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        fine_depth_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        fine_weight_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
 
-        # Render the coarse image and depth
-        coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
-            coarse_rgb, coarse_sigma, self.n_coarse)
-        coarse_image, coarse_depth, coarse_weights = render_image_depth(
-            coarse_rgb, coarse_sigma, coarse_points)
+        for i in range(self.sequential_chunks):
+            start_chunk = i * self.ray_chunks
+            end_chunk = (i + 1) * self.ray_chunks
 
-        # Compute middle points for fine sampling
-        mid_points = 0.5 * (coarse_points[..., 1:] + coarse_points[..., :-1])
+            ray_origin_chunk = ray_origin_flat[start_chunk:end_chunk, ...]
+            ray_direction_chunk = ray_direction_flat[start_chunk:end_chunk, ...]
+            coarse_points_chunk = coarse_points_flat[start_chunk:end_chunk, ...]
 
-        # Apply hierarchical sampling and get the fine samples for the fine rays
-        fine_points = fine_hierarchical_sampling(
-            mid_points, coarse_weights, self.n_fine)
+            coarse_chunk_results, fine_chunk_results = self.predict_and_render_chunk(
+                (ray_origin_chunk, ray_direction_chunk, coarse_points_chunk))
 
-        # Combine the coarse and fine points
-        fine_points = tf.sort(
-            tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
+            (coarse_image_chunk, coarse_depth_chunk,
+             coarse_weights_chunk) = coarse_chunk_results
+            (fine_image_chunk, fine_depth_chunk,
+             fine_weights_chunk) = fine_chunk_results
 
-        # Encode the fine rays
-        fine_rays, fine_rays_direction = encode_position_and_directions(
-            ray_origin, ray_direction, fine_points,  self.pos_emb_xyz, self.pos_emb_dir)
+            # Write the results to the tensor array
+            coarse_image_flat = coarse_image_flat.write(i, coarse_image_chunk)
+            coarse_depth_flat = coarse_depth_flat.write(i, coarse_depth_chunk)
+            coarse_weight_flat = coarse_weight_flat.write(
+                i, coarse_weights_chunk)
 
-        # Compute the fine rgb and sigma
-        fine_rgb, fine_sigma = self.predict_fine(
-            fine_rays, fine_rays_direction)
+            fine_image_flat = fine_image_flat.write(i, fine_image_chunk)
+            fine_depth_flat = fine_depth_flat.write(i, fine_depth_chunk)
+            fine_weight_flat = fine_weight_flat.write(i, fine_weights_chunk)
 
-        # Render the fine image and depth
-        fine_rgb, fine_sigma = self.ensure_mlp_shape(
-            fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
-        fine_image, fine_depth, fine_weights = render_image_depth(
-            fine_rgb, fine_sigma, fine_points)
+        # Stack the results
+        coarse_image = tf.reshape(
+            coarse_image_flat.stack(), (self.batch_size, self.image_height, self.image_width, 3))
+        coarse_depth = tf.reshape(
+            coarse_depth_flat.stack(), (self.batch_size, self.image_height, self.image_width))
+        coarse_weights = tf.reshape(
+            coarse_weight_flat.stack(), (self.batch_size, self.image_height, self.image_width, self.n_coarse))
+
+        fine_image = tf.reshape(
+            fine_image_flat.stack(), (self.batch_size, self.image_height, self.image_width, 3))
+        fine_depth = tf.reshape(
+            fine_depth_flat.stack(), (self.batch_size, self.image_height, self.image_width))
+        fine_weights = tf.reshape(
+            fine_weight_flat.stack(), (self.batch_size, self.image_height, self.image_width, self.n_coarse + self.n_fine))
 
         return (coarse_image, coarse_depth, coarse_weights), (fine_image, fine_depth, fine_weights)
 
     def train_step(self, inputs):
         images, rays = inputs
         images = images[..., :3]
+        ray_origin, ray_direction, coarse_points = rays
+
+        image_flat = tf.reshape(images, (self.num_rays, 3))
+        ray_origin_flat = tf.reshape(ray_origin, (self.num_rays, 3))
+        ray_direction_flat = tf.reshape(ray_direction, (self.num_rays, 3))
+        coarse_points_flat = tf.reshape(
+            coarse_points, (self.num_rays, self.n_coarse))
+
+        coarse_image_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        coarse_depth_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+
+        fine_image_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
+        fine_depth_flat = tf.TensorArray(
+            tf.float32, size=self.sequential_chunks)
 
         # Compute gradients for coarse and fine model
         logging.debug('Computing gradients for coarse and fine model')
-        with tf.GradientTape(persistent=True) as tape:
-            # Watch the trainable variables.
-            tape.watch(self.coarse.trainable_variables)
-            tape.watch(self.fine.trainable_variables)
+        for i in range(self.sequential_chunks):
+            start_chunk = i * self.ray_chunks
+            end_chunk = (i + 1) * self.ray_chunks
 
-            # Predict the coarse and fine images
-            coarse_results, fine_results = self.predict_and_render_images(rays)
-            (coarse_image, coarse_depth, coarse_weights) = coarse_results
-            (fine_image, fine_depth, fine_weights) = fine_results
+            image_flat_chunk = image_flat[start_chunk:end_chunk, ...]
+            ray_origin_chunk = ray_origin_flat[start_chunk:end_chunk, ...]
+            ray_direction_chunk = ray_direction_flat[start_chunk:end_chunk, ...]
+            coarse_points_chunk = coarse_points_flat[start_chunk:end_chunk, ...]
 
-            # Compute the loss
-            coarse_loss = self.loss(images, coarse_image)
-            fine_loss = self.loss(images, fine_image)
+            with tf.GradientTape(persistent=True, watch_accessed_variables=False) as tape:
+                # Watch the trainable variables.
+                tape.watch(self.coarse.trainable_variables)
+                tape.watch(self.fine.trainable_variables)
 
-         # Update the model weights using backpropagation
+                # Predict the coarse and fine images
+                coarse_chunk_results, fine_chunk_results = self.predict_and_render_chunk(
+                    (ray_origin_chunk, ray_direction_chunk, coarse_points_chunk))
+
+                (coarse_image_chunk, coarse_depth_chunk, _) = coarse_chunk_results
+                (fine_image_chunk, fine_depth_chunk, _) = fine_chunk_results
+
+                # Compute the loss
+                coarse_loss_chunk = self.loss(
+                    image_flat_chunk, coarse_image_chunk)
+                fine_loss_chunk = self.loss(image_flat_chunk, fine_image_chunk)
+
+                self.coarse_loss_accumulator.assign_add(
+                    coarse_loss_chunk / self.sequential_chunks)
+                self.fine_loss_accumulator.assign_add(
+                    fine_loss_chunk / self.sequential_chunks)
+
+            # Append Image Chunks
+            coarse_image_flat = coarse_image_flat.write(i, coarse_image_chunk)
+            coarse_depth_flat = coarse_depth_flat.write(i, coarse_depth_chunk)
+            fine_image_flat = fine_image_flat.write(i, fine_image_chunk)
+            fine_depth_flat = fine_depth_flat.write(i, fine_depth_chunk)
+
+            # Compute the gradients
+            coarse_gradients = tape.gradient(
+                coarse_loss_chunk, self.coarse.trainable_variables)
+            fine_gradients = tape.gradient(
+                fine_loss_chunk, self.fine.trainable_variables)
+
+            # Accumulate the gradients
+            for j, grad in enumerate(coarse_gradients):
+                self.coarse_gradients_accumulator[j].assign_add(
+                    grad / self.sequential_chunks)
+            for j, grad in enumerate(fine_gradients):
+                self.fine_gradients_accumulator[j].assign_add(
+                    grad / self.sequential_chunks)
+
+        # Update the model weights using backpropagation
         logging.debug('Updating model weights')
-        coarse_gradients = tape.gradient(
-            coarse_loss, self.coarse.trainable_variables)
         self.coarse_optimizer.apply_gradients(
-            zip(coarse_gradients, self.coarse.trainable_variables))
-
-        fine_gradients = tape.gradient(
-            fine_loss, self.fine.trainable_variables)
+            zip(self.coarse_gradients_accumulator, self.coarse.trainable_variables))
         self.fine_optimizer.apply_gradients(
-            zip(fine_gradients, self.fine.trainable_variables))
+            zip(self.fine_gradients_accumulator, self.fine.trainable_variables))
+
+        # Reconstruct image from chunks
+        coarse_image = tf.reshape(
+            coarse_image_flat.stack(), (self.batch_size, self.image_height, self.image_width, 3))
+        coarse_depth = tf.reshape(
+            coarse_depth_flat.stack(), (self.batch_size, self.image_height, self.image_width))
+
+        fine_image = tf.reshape(
+            fine_image_flat.stack(), (self.batch_size, self.image_height, self.image_width, 3))
+        fine_depth = tf.reshape(
+            fine_depth_flat.stack(), (self.batch_size, self.image_height, self.image_width))
 
         # Compute the PSNR and SSIM metrics
         logging.debug('Computing metrics')
@@ -236,12 +336,21 @@ class NeRF(tf.keras.Model):
 
         # Update the loss and metrics trackers
         logging.debug('Updating loss and metrics trackers')
-        self.coarse_loss_tracker.update_state(coarse_loss)
+        self.coarse_loss_tracker.update_state(self.coarse_loss_accumulator)
         self.coarse_psnr_metric.update_state(coarse_psnr)
         self.corase_ssim_metric.update_state(coarse_ssim)
-        self.fine_loss_tracker.update_state(fine_loss)
+        self.fine_loss_tracker.update_state(self.fine_loss_accumulator)
         self.fine_psnr_metric.update_state(fine_psnr)
         self.fine_ssim_metric.update_state(fine_ssim)
+
+        # Reset the accumulators to zero
+        self.coarse_loss_accumulator.assign(0.0)
+        self.fine_loss_accumulator.assign(0.0)
+
+        for var in self.coarse_gradients_accumulator:
+            var.assign(tf.zeros_like(var))
+        for var in self.fine_gradients_accumulator:
+            var.assign(tf.zeros_like(var))
 
         # Save last rendered images
         self.last_train_coarse_image.assign(coarse_image)
@@ -259,116 +368,6 @@ class NeRF(tf.keras.Model):
             "fine_ssim": self.fine_ssim_metric.result(),
         }
 
-    # def train_step(self, inputs):
-    #     logging.debug('Training step')
-    #     # Unpack the data.
-    #     images, rays = inputs
-    #     images = images[..., :3]
-    #     ray_origin, ray_direction, coarse_points = rays
-
-    #     # Encode rays
-    #     coarse_points = self.ensure_points_shape(coarse_points)
-
-    #     # Encode coarse rays
-    #     coarse_rays, coarse_rays_direction = encode_position_and_directions(
-    #         ray_origin, ray_direction, coarse_points, self.pos_emb_xyz, self.pos_emb_dir)
-
-    #     coarse_rays, coarse_rays_direction = self.ensure_encoded_shape(
-    #         coarse_rays, coarse_rays_direction, self.n_coarse)
-
-    #     # Keep track of the gradients for updating coarse model
-    #     with tf.GradientTape() as coarse_tape:
-    #         coarse_rgb, coarse_sigma = self.predict_coarse(
-    #             coarse_rays, coarse_rays_direction)
-
-    #         # Render the coarse image and depth
-    #         coarse_rgb, coarse_sigma = self.ensure_mlp_shape(
-    #             coarse_rgb, coarse_sigma, self.n_coarse)
-
-    #         coarse_image, coarse_depth, coarse_weights = render_image_depth(
-    #             coarse_rgb, coarse_sigma, coarse_points)
-
-    #         # Compute the photometric loss for the coarse model
-    #         coarse_loss = self.loss(images, coarse_image)
-
-    #     # Compute middle points for fine sampling
-    #     mid_points = 0.5 * (coarse_points[..., 1:] + coarse_points[..., :-1])
-
-    #     # Apply hierarchical sampling and get the fine samples for the fine rays
-    #     fine_points = fine_hierarchical_sampling(
-    #         mid_points, coarse_weights, self.n_fine)
-
-    #     # Combine the coarse and fine points
-    #     fine_points = tf.sort(
-    #         tf.concat([coarse_points, fine_points], axis=-1), axis=-1)
-
-    #     # Encode the fine rays
-    #     logging.debug('Encoding fine rays')
-    #     fine_rays, fine_rays_direction = encode_position_and_directions(
-    #         ray_origin, ray_direction, fine_points, self.pos_emb_xyz, self.pos_emb_dir)
-
-    #     # Keep track of the gradients for updating fine model
-    #     logging.debug('Computing gradients for fine model')
-    #     with tf.GradientTape() as fine_tape:
-    #         fine_rgb, fine_sigma = self.predict_fine(
-    #             fine_rays, fine_rays_direction)
-
-    #         # Render the fine image and depth
-    #         fine_rgb, fine_sigma = self.ensure_mlp_shape(
-    #             fine_rgb, fine_sigma, self.n_coarse + self.n_fine)
-
-    #         logging.debug('Rendering fine image')
-    #         fine_image, fine_depth, fine_weights = render_image_depth(
-    #             fine_rgb, fine_sigma, fine_points)
-
-    #         # Compute the photometric loss for fine model
-    #         logging.debug('Calculating fine loss')
-    #         fine_loss = self.loss(images, fine_image)
-
-    #     # Update the model weights using backpropagation
-    #     logging.debug('Updating model weights')
-    #     coarse_gradients = coarse_tape.gradient(
-    #         coarse_loss, self.coarse.trainable_variables)
-    #     self.coarse_optimizer.apply_gradients(
-    #         zip(coarse_gradients, self.coarse.trainable_variables))
-
-    #     fine_gradients = fine_tape.gradient(
-    #         fine_loss, self.fine.trainable_variables)
-    #     self.fine_optimizer.apply_gradients(
-    #         zip(fine_gradients, self.fine.trainable_variables))
-
-    #     # Compute the PSNR and SSIM metrics
-    #     logging.debug('Computing metrics')
-    #     coarse_psnr = tf.image.psnr(images, coarse_image, max_val=1.0)
-    #     coarse_ssim = tf.image.ssim(images, coarse_image, max_val=1.0)
-    #     fine_psnr = tf.image.psnr(images, fine_image, max_val=1.0)
-    #     fine_ssim = tf.image.ssim(images, fine_image, max_val=1.0)
-
-    #     # Update the loss and metrics trackers
-    #     logging.debug('Updating loss and metrics trackers')
-    #     self.coarse_loss_tracker.update_state(coarse_loss)
-    #     self.coarse_psnr_metric.update_state(coarse_psnr)
-    #     self.corase_ssim_metric.update_state(coarse_ssim)
-    #     self.fine_loss_tracker.update_state(fine_loss)
-    #     self.fine_psnr_metric.update_state(fine_psnr)
-    #     self.fine_ssim_metric.update_state(fine_ssim)
-
-    #     # Save last rendered images
-    #     self.last_train_coarse_image.assign(coarse_image)
-    #     self.last_train_fine_image.assign(fine_image)
-    #     self.last_train_coarse_depth.assign(coarse_depth)
-    #     self.last_train_fine_depth.assign(fine_depth)
-    #     self.last_train_image.assign(images)
-
-    #     return {
-    #         "coarse_loss": self.coarse_loss_tracker.result(),
-    #         "coarse_psnr": self.coarse_psnr_metric.result(),
-    #         "coarse_ssim": self.corase_ssim_metric.result(),
-    #         "fine_loss": self.fine_loss_tracker.result(),
-    #         "fine_psnr": self.fine_psnr_metric.result(),
-    #         "fine_ssim": self.fine_ssim_metric.result(),
-    #     }
-
     def test_step(self, inputs):
         logging.debug('Testing step')
         # Unpack the data.
@@ -378,8 +377,8 @@ class NeRF(tf.keras.Model):
         # Predict the coarse and fine images
         logging.debug('Predicting coarse and fine images')
         coarse_results, fine_results = self.predict_and_render_images(rays)
-        (coarse_image, coarse_depth, coarse_weights) = coarse_results
-        (fine_image, fine_depth, fine_weights) = fine_results
+        (coarse_image, _, _) = coarse_results
+        (fine_image, _, _) = fine_results
 
         # Compute the photometric loss for the coarse model
         logging.debug('Calculating coarse loss')
@@ -424,22 +423,3 @@ class NeRF(tf.keras.Model):
             self.fine_psnr_metric,
             self.fine_ssim_metric,
         ]
-
-
-# if __name__ == '__main__':
-    #     model = NeRFMLP()
-    #     POS_ENCODE_DIMS = 16
-    #     model.build(input_shape=[[4, 256, 256, 2 * 3 * POS_ENCODE_DIMS + 3],
-    #                 [4, 256, 256, 2 * 3 * POS_ENCODE_DIMS + 3]])
-    #     model.summary()
-    # nerf = NeRF()
-    # img_size = 100
-    # ray_origin, ray_direction, sample_points = tf.random.uniform((4, img_size, img_size, 3)), tf.random.uniform(
-    #     (4, img_size, img_size, 3)), tf.random.uniform((4, img_size, img_size, 64))
-
-    # ray_coarse = (ray_origin[..., None, :] +
-    #               ray_direction[..., None, :] * sample_points[..., None])
-
-    # print('ray_coarse shape', ray_coarse.shape)
-
-    # ray_coarse_encoded = nerf.positional_encoding(ray_coarse)

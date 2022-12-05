@@ -28,25 +28,44 @@ def main():
     parser.add_argument('--skip_layer', type=int, default=4)
 
     # NeRF Dataset Parameters
-    parser.add_argument('--img_wh', type=int, default=64)
+    parser.add_argument('--img_wh', type=int, default=512)
     parser.add_argument('--near', type=float, default=2.0)
     parser.add_argument('--far', type=float, default=6.0)
 
     # NeRF Training Parameters
     parser.add_argument('--steps_per_epoch', type=int, default=100)
-    parser.add_argument('--num_epochs', type=int, default=25)
+    parser.add_argument('--num_epochs', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_gpus', type=int, default=1)
-    parser.add_argument('--ray_chunks', type=int, default=1024)
+    parser.add_argument('--ray_chunks', type=int, default=2048)
     parser.add_argument('--eagerly', action='store_true')
 
     # NeRF Logging Parameters
     parser.add_argument('--model_dirs', type=str, default='model')
     parser.add_argument('--log_dir', type=str, default='logs')
-    parser.add_argument('--log_freq', type=int, default=1)
+    parser.add_argument('--log_freq', type=int, default=5)
+    parser.add_argument('--verbose', action='store_true')
 
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+
+    logging.info(args)
+
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Currently, memory growth needs to be the same across GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.list_logical_devices('GPU')
+            print(len(gpus), "Physical GPUs,", len(
+                logical_gpus), "Logical GPUs")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            print(e)
 
     # Configure multi-gpu training
     strategy = tf.distribute.MirroredStrategy()
@@ -68,9 +87,6 @@ def main():
         far=args.far,
         n_sample=args.num_coarse_samples
     )
-
-    # assert args.batch_size % strategy.num_replicas_in_sync == 0, \
-    #     'Batch size must be divisible by number of GPUs'
 
     with strategy.scope():
         # Create the model
@@ -140,6 +156,4 @@ def main():
 
 
 if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
     main()
