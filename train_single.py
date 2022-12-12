@@ -11,6 +11,11 @@ tf.random.set_seed(42)
 
 
 def main():
+    # Tested on DGX Station Tesla V100 32GB
+    # --img_wh 128 --ray_chunks 2048 -> Verified (3s per step)
+    # --eagerly --img_wh 128 --ray_chunks 4096 -> Verified (2s per step)
+    # --eagerly --img_wh 512 --ray_chunks 4096: larger ray_chunks will cause OOM
+
     parser = argparse.ArgumentParser()
     # NeRF Dataset Directory
     parser.add_argument('--name', type=str, default='lego',
@@ -28,13 +33,14 @@ def main():
     parser.add_argument('--skip_layer', type=int, default=4)
 
     # NeRF Dataset Parameters
-    parser.add_argument('--img_wh', type=int, default=512)
+    parser.add_argument('--img_wh', type=int, default=128)
     parser.add_argument('--near', type=float, default=2.0)
     parser.add_argument('--far', type=float, default=6.0)
+    parser.add_argument('--white_bg', action='store_true')
 
     # NeRF Training Parameters
     parser.add_argument('--steps_per_epoch', type=int, default=100)
-    parser.add_argument('--num_epochs', type=int, default=25)
+    parser.add_argument('--num_epochs', type=int, default=250)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_gpus', type=int, default=1)
@@ -68,7 +74,7 @@ def main():
             print(e)
 
     # Load the data
-    dataset_loader = DatasetLoader(args.data_dir)
+    dataset_loader = DatasetLoader(args.data_dir, args.white_bg)
     train_dataset, val_dataset, test_dataset = dataset_loader.load_dataset(
         batch_size=args.batch_size,
         image_width=args.img_wh,
@@ -79,12 +85,15 @@ def main():
     )
 
     # Create the model
-    if os.path.exists(os.path.join(args.model_dirs, args.name, "coarse")) and \
-            os.path.exists(os.path.join(args.model_dirs, args.name, "fine")):
-        logging.info("Loading the latest model")
-        model_path = args.model_dirs
+    last_model_path = os.path.join(args.log_dir, args.name, "model")
+    if os.path.exists(os.path.join(last_model_path, "coarse.h5")) and \
+            os.path.exists(os.path.join(last_model_path, "fine.h5")):
+        logging.info("Loading the latest logged model")
+        model_path = last_model_path
     else:
         model_path = None
+
+    tf.keras.backend.clear_session()
 
     nerf = NeRF(
         n_coarse=args.num_coarse_samples,
@@ -97,6 +106,17 @@ def main():
         model_path=model_path
     )
 
+    # Create the callbacks
+    nerf_train_monitor = NeRFTrainMonitor(
+        dataset=test_dataset,
+        log_dir=os.path.join(args.log_dir, args.name),
+        batch_size=args.batch_size,
+        update_freq=args.log_freq
+    )
+
+    last_epoch = nerf_train_monitor.last_epoch
+    logging.info("Last epoch: {}".format(last_epoch))
+
     # Compile the model
     nerf.compile(
         # tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -106,15 +126,8 @@ def main():
         image_width=args.img_wh,
         image_height=args.img_wh,
         ray_chunks=args.ray_chunks,
-        run_eagerly=args.eagerly
-    )
-
-    # Create the callbacks
-    nerf_train_monitor = NeRFTrainMonitor(
-        dataset=test_dataset,
-        log_dir=os.path.join(args.log_dir, args.name),
-        batch_size=args.batch_size,
-        update_freq=args.log_freq
+        run_eagerly=args.eagerly,
+        white_background=args.white_bg
     )
 
     # Train the model
@@ -124,16 +137,14 @@ def main():
         epochs=args.num_epochs,
         validation_data=val_dataset,
         validation_steps=args.steps_per_epoch // 5,
-        callbacks=[nerf_train_monitor]
+        callbacks=[nerf_train_monitor],
+        initial_epoch=last_epoch
     )
 
     # Save the model
     os.makedirs(args.model_dirs, exist_ok=True)
-    coarse_save_path = os.path.join(args.model_dirs, args.name, 'coarse')
-    fine_save_path = os.path.join(args.model_dirs, args.name, 'fine')
-
-    nerf.coarse.save(coarse_save_path)
-    nerf.fine.save(fine_save_path)
+    save_path = os.path.join(args.model_dirs, args.name)
+    nerf.save_model(save_path)
 
 
 if __name__ == '__main__':

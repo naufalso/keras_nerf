@@ -24,6 +24,7 @@ class RaysGenerator:
         self.image_width_fl = tf.cast(image_width, dtype=tf.float32)
         self.image_height_fl = tf.cast(image_height, dtype=tf.float32)
         self.n_sample_fl = tf.cast(n_sample, dtype=tf.float32)
+        self.focal_length_fl = tf.cast(focal_length, dtype=tf.float32)
 
     # def __call__(self, camera2world):
     #     # create a meshgrid of image dimensions
@@ -85,8 +86,8 @@ class RaysGenerator:
         )  # Shape: [H, W], [H, W]
 
         # Define camera coordinates
-        x_camera = (x - self.image_width_fl * 0.5) / self.focal_length
-        y_camera = (y - self.image_height_fl * 0.5) / self.focal_length
+        x_camera = (x - self.image_width_fl * 0.5) / self.focal_length_fl
+        y_camera = (y - self.image_height_fl * 0.5) / self.focal_length_fl
 
         # Define camera vector (x,y,z). Shape: [H, W, 3]
         xyz_camera = tf.stack(
@@ -116,13 +117,14 @@ class RaysGenerator:
             self.near, self.far, self.n_sample)  # Shape: [N]
 
         # Add noise to the sample points
+        interval = (self.far - self.near) / self.n_sample_fl
 
-        noise = (tf.random.uniform(shape=[self.image_width,
-                 self.image_height, self.n_sample]) *
-                 (self.far - self.near) / self.n_sample_fl)
+        noise = tf.random.uniform(
+            shape=[self.image_width, self.image_height, self.n_sample]) * interval - (interval / 2)
         # tf.print(noise)
 
         sample_points = sample_points + noise  # Shape: [H, W, N]
+        sample_points = tf.clip_by_value(sample_points, self.near, self.far)
 
         # Returns the ray origin, direction, and the sample points
         return (ray_origin, ray_direction, sample_points)

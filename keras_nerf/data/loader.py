@@ -10,7 +10,7 @@ from keras_nerf.data.image import ImageLoader
 
 
 class DatasetLoader:
-    def __init__(self, data_dir: str, **kwargs):
+    def __init__(self, data_dir: str, white_background: bool = False, **kwargs):
         """
         Initialize the dataset loader.
         Args:
@@ -18,6 +18,7 @@ class DatasetLoader:
         """
 
         self.data_dir = data_dir
+        self.white_background = white_background
 
     def _load_json(self, filename: str) -> dict:
         """
@@ -65,7 +66,8 @@ class DatasetLoader:
             tf.data.Dataset: the loaded dataset.
         """
 
-        image_loader = ImageLoader(image_width, image_height)
+        image_loader = ImageLoader(
+            image_width, image_height, self.white_background)
 
         tf_datasets = []
 

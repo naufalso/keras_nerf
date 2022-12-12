@@ -2,13 +2,16 @@ import tensorflow as tf
 
 
 class NeRFUtils:
-    def __init__(self, batch_size, image_height, image_width, ray_chunks):
+    def __init__(self, batch_size, image_height, image_width, ray_chunks, pos_emb_xyz, pos_emb_dir, white_background=False):
         self.batch_size = batch_size
         self.image_height = image_height
         self.image_width = image_width
         self.ray_chunks = ray_chunks
+        self.pos_emb_xyz = pos_emb_xyz
+        self.pos_emb_dir = pos_emb_dir
         self.num_rays = self.batch_size * self.image_height * self.image_width
         self.sequential_chunks = self.num_rays // ray_chunks
+        self.white_background = white_background
 
     @tf.function
     def render_image_depth_chunk(self, rgb, sigma, sample_points, epsilon=1e-10):
@@ -46,6 +49,11 @@ class NeRFUtils:
 
         image = tf.reduce_sum(weights[..., None] * rgb, axis=-2)
         depth = tf.reduce_sum(weights * sample_points, axis=-1)
+
+        if self.white_background:
+            image = image + (1.0 - tf.reduce_sum(weights, axis=-1)[..., None])
+
+        image = tf.clip_by_value(image, 0.0, 1.0)
 
         return image, depth, weights
 
@@ -178,7 +186,7 @@ class NeRFUtils:
         return samples
 
     @tf.function(reduce_retracing=True)
-    def encode_position_and_directions(self, ray_origin, ray_direction, coarse_points, pos_emb_xyz, pos_emb_dir):
+    def encode_position_and_directions(self, ray_origin, ray_direction, coarse_points):
         # Generate rays
         # Equation: ray(t) = ray_origin + t * ray_direction
         # Shape: [batch_size, image_height, image_width, n_samples, 3]
@@ -187,14 +195,16 @@ class NeRFUtils:
 
         # Positional encode the rays positions
         # Shape: [batch_size, image_height, image_width, n_samples, 3 + 2 * 3 * pos_embedding_dim]
-        rays_positions = self.positional_encoding(rays_positions, pos_emb_xyz)
+        rays_positions = self.positional_encoding(
+            rays_positions, self.pos_emb_xyz)
 
         # Positional encode the ray directions
         # Shape: [batch_size, image_height, image_width, n_samples, 3 + 2 * 3 * pos_embedding_dim]
         rays_direction_shape = tf.shape(rays_positions[..., :3])
         rays_direction = tf.broadcast_to(
             ray_direction[..., None, :], shape=rays_direction_shape)
-        rays_direction = self.positional_encoding(rays_direction, pos_emb_dir)
+        rays_direction = self.positional_encoding(
+            rays_direction, self.pos_emb_dir)
 
         # Return the encoded rays
         return rays_positions, rays_direction

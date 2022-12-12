@@ -2,6 +2,7 @@ import os
 import logging
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from csv import DictWriter, DictReader
 
 
 class NeRFTrainMonitor(tf.keras.callbacks.Callback):
@@ -15,22 +16,46 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
         self.batch_size = batch_size
 
         self.update_freq = update_freq
+
         self.log_model_dir = os.path.join(log_dir, 'model')
         os.makedirs(self.log_model_dir, exist_ok=True)
-
-        # self.log_sample = log_sample
 
         self.coarse_log_list = []
         self.val_coarse_log_list = []
         self.fine_log_list = []
         self.val_fine_log_list = []
 
+        # Read the last log file
+        self.last_epoch = 0
+        self.log_csv = os.path.join(log_dir, 'log.csv')
+        if os.path.exists(self.log_csv):
+            with open(self.log_csv, 'r') as f:
+                csv_reader = DictReader(f)
+                for i, row in enumerate(csv_reader):
+                    if i > 0:
+                        self.coarse_log_list.append(float(row['coarse_loss']))
+                        self.val_coarse_log_list.append(
+                            float(row['val_coarse_loss']))
+                        self.fine_log_list.append(float(row['fine_loss']))
+                        self.val_fine_log_list.append(
+                            float(row['val_fine_loss']))
+                        self.last_epoch = int(row['epoch'])
+            self.last_epoch += 1
+
+        # self.log_sample = log_sample
+
         os.makedirs(self.log_dir, exist_ok=True)
 
         for inputs in self.dataset.take(1):
             self.images, self.rays = inputs
+            ray_origin, ray_direction, coarse_points = self.rays
+            (self.ray_origin, self.ray_direction, self.coarse_points) = (
+                ray_origin[:self.batch_size], ray_direction[:self.batch_size], coarse_points[:self.batch_size])
 
-    def on_epoch_end(self, epoch, logs=None):
+        self.dataset_iterator = iter(self.dataset)
+        self.dataset_iterator.get_next()
+
+    def on_epoch_end(self, epoch, logs):
         self.coarse_log_list.append(logs['coarse_loss'])
         self.val_coarse_log_list.append(logs['val_coarse_loss'])
         self.fine_log_list.append(logs['fine_loss'])
@@ -38,9 +63,9 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
 
         if epoch % self.update_freq == 0:
             coarse_results, fine_results = self.model.predict_and_render_images(
-                self.rays)
-            (coarse_image, coarse_depth, coarse_weights) = coarse_results
-            (fine_image, fine_depth, fine_weights) = fine_results
+                (self.ray_origin, self.ray_direction, self.coarse_points))
+            (coarse_image, coarse_depth, _) = coarse_results
+            (fine_image, fine_depth, _) = fine_results
 
             # Plot the test images
             for i in range(self.batch_size):
@@ -78,41 +103,64 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
                 ax5.plot(self.val_fine_log_list, color='orange',
                          linestyle='dashed', label='Fine Val Loss')
                 ax5.legend()
+                ax5.set_yscale('log')
                 ax5.set_title(f'Loss Plot: {epoch}')
 
                 plt.savefig(os.path.join(
                     self.log_dir, f'test_{i}_{epoch}.png'))
                 plt.close()
 
-            # Plot last train images
+            # Predict other test images
+            inputs = self.dataset_iterator.get_next()
+            images, rays = inputs
+            images = images[..., :3]
+
+            ray_origin, ray_direction, coarse_points = rays
+            (ray_origin, ray_direction, coarse_points) = (
+                ray_origin[:self.batch_size], ray_direction[:self.batch_size], coarse_points[:self.batch_size])
+
+            coarse_results, fine_results = self.model.predict_and_render_images(
+                (ray_origin, ray_direction, coarse_points))
+            (coarse_image, coarse_depth, _) = coarse_results
+            (fine_image, fine_depth, _) = fine_results
+
             for i in range(self.batch_size):
                 fig = plt.figure(figsize=(20, 5))
                 gs = fig.add_gridspec(1, 5)
 
                 ax1 = fig.add_subplot(gs[0, 0])
-                ax1.imshow(self.model.last_train_coarse_image[i])
+                ax1.imshow(coarse_image[i])
                 ax1.set_title('Coarse Image')
 
                 ax2 = fig.add_subplot(gs[0, 1])
-                ax2.imshow(self.model.last_train_coarse_depth[i])
+                ax2.imshow(coarse_depth[i])
                 ax2.set_title('Coarse Depth')
 
                 ax3 = fig.add_subplot(gs[0, 2])
-                ax3.imshow(self.model.last_train_fine_image[i])
+                ax3.imshow(fine_image[i])
                 ax3.set_title('Fine Image')
 
                 ax4 = fig.add_subplot(gs[0, 3])
-                ax4.imshow(self.model.last_train_fine_depth[i])
+                ax4.imshow(fine_depth[i])
                 ax4.set_title('Fine Depth')
 
                 ax5 = fig.add_subplot(gs[0, 4])
-                ax5.imshow(self.model.last_train_image[i])
+                ax5.imshow(images[i])
                 ax5.set_title('Ground Truth')
 
                 plt.savefig(os.path.join(
-                    self.log_dir, f'train_{i}_{epoch}.png'))
+                    self.log_dir, f'test_sample_{i}_{epoch}.png'))
                 plt.close()
 
+            # Write training logs into csv file
+            with open(self.log_csv, 'a') as f:
+                new_logs = {'epoch': epoch}
+                new_logs.update(logs)
+                dict_writer = DictWriter(f, new_logs.keys())
+                if epoch == 0:
+                    dict_writer.writeheader()
+                dict_writer.writerow(new_logs)
+
             # Save the model
-            self.model.coarse.save(os.path.join(self.log_model_dir, f'coarse'))
-            self.model.fine.save(os.path.join(self.log_model_dir, f'fine'))
+            self.model.save_model(self.log_model_dir,
+                                  weights_only=(epoch != 0))

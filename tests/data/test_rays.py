@@ -57,6 +57,9 @@ def test_ray_generator_output_shape(rays_generator, camera_params):
     assert ray_direction.dtype == tf.float32
     assert sample_points.dtype == tf.float32
 
+    assert np.min(sample_points) >= 2.0 - (4.0 / 32.0) and np.max(
+        sample_points) <= 6.0 + (4.0 / 32.0)
+
     rays = (ray_origin[..., None, :] +
             ray_direction[..., None, :] * sample_points[..., None])
 

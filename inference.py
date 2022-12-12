@@ -17,37 +17,49 @@ def main():
                         help='Name of the nerf model')
 
     # NeRF Model Parameters
-    parser.add_argument('--num_coarse_samples', type=int, default=64)
-    parser.add_argument('--num_fine_samples', type=int, default=128)
-    parser.add_argument('--pos_emb_xyz', type=int, default=10)
-    parser.add_argument('--pos_emb_dir', type=int, default=4)
-    parser.add_argument('--num_layers', type=int, default=8)
-    parser.add_argument('--num_units', type=int, default=256)
-    parser.add_argument('--skip_layer', type=int, default=4)
-    parser.add_argument('--ray_chunks', type=int, default=1024)
+    parser.add_argument('--model_dirs', type=str, required=True)
+    parser.add_argument('--ray_chunks', type=int, default=4096)
 
     # NeRF Dataset Parameters
-    parser.add_argument('--img_wh', type=int, default=64)
+    parser.add_argument('--img_wh', type=int, default=128)
     parser.add_argument('--near', type=float, default=2.0)
     parser.add_argument('--far', type=float, default=6.0)
     parser.add_argument('--fov', type=float, default=0.6911112070083618)
     parser.add_argument('--eagerly', action='store_true')
+    parser.add_argument('--white_bg', action='store_true')
 
-    # NeRF Model Weights
-    parser.add_argument('--model_dirs', type=str, default='model')
+    # View Parameters
+    parser.add_argument('--phi', type=float, default=-30.0)
+    parser.add_argument('--z_translate', type=float, default=4.0)
 
     # Output Directory
     parser.add_argument('--output_dir', type=str, default='output')
-    parser.add_argument('--output_freq', type=int, default=1)
+    parser.add_argument('--output_freq', type=int, default=10)
+    parser.add_argument('--verbose', action='store_true')
 
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+
     logging.info(args)
+
+    # Check if the model exists
+    if not os.path.exists(os.path.join(args.model_dirs, f"coarse.h5")) or \
+            not os.path.exists(os.path.join(args.model_dirs, f"fine.h5")):
+        raise FileNotFoundError(
+            f"Model not found for {args.model_dirs}")
+
+    # Initialize NeRF Model
+    nerf = NeRF(
+        model_path=args.model_dirs
+    )
 
     # Create camera matrix for 360 degree view
     camera_matrix = []
     for tetha in range(0, 360, args.output_freq):
         tetha = float(tetha)
-        camera_matrix.append(pose_spherical(tetha, -30.0, 4.0))
+        camera_matrix.append(pose_spherical(tetha, args.phi, args.z_translate))
 
     camera_matrix = tf.stack(camera_matrix, axis=0)
     logging.info(f'Camera Matrix Shape: {camera_matrix.shape}')
@@ -59,31 +71,13 @@ def main():
         image_height=args.img_wh,
         near=args.near,
         far=args.far,
-        n_sample=args.num_coarse_samples
+        n_sample=nerf.n_coarse
     )
 
     # Convert camera matrix to rays
     tf_ds_rays = tf.data.Dataset.from_tensor_slices(camera_matrix).map(
         rays_generator
     ).batch(1)
-
-    # Load model
-    if not os.path.exists(os.path.join(args.model_dirs, f"coarse")) or \
-            not os.path.exists(os.path.join(args.model_dirs, f"fine")):
-        raise FileNotFoundError(
-            f"Model not found for {args.model_dirs}")
-
-    # Initialize NeRF Model
-    nerf = NeRF(
-        n_coarse=args.num_coarse_samples,
-        n_fine=args.num_fine_samples,
-        pos_emb_xyz=args.pos_emb_xyz,
-        pos_emb_dir=args.pos_emb_dir,
-        n_layers=args.num_layers,
-        dense_units=args.num_units,
-        skip_layer=args.skip_layer,
-        model_path=args.model_dirs
-    )
 
     # Compile the model
     nerf.compile(
@@ -92,7 +86,9 @@ def main():
         batch_size=1,
         image_width=args.img_wh,
         image_height=args.img_wh,
-        ray_chunks=args.ray_chunks
+        ray_chunks=args.ray_chunks,
+        white_background=args.white_bg,
+        is_training=False
     )
 
     if args.eagerly:
@@ -107,9 +103,9 @@ def main():
     images = []
     depth = []
     for rays in tqdm(tf_ds_rays, total=360//args.output_freq, desc='Rendering Images'):
-        coarse_results, fine_results = nerf_predictions(rays)
-        (coarse_image, coarse_depth, coarse_weights) = coarse_results
-        (fine_image, fine_depth, fine_weights) = fine_results
+
+        _, fine_results = nerf_predictions(rays)
+        (fine_image, fine_depth, _) = fine_results
 
         images.append(fine_image.numpy()[0])
         depth.append(fine_depth.numpy()[0])
@@ -124,6 +120,4 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
     main()
