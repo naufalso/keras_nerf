@@ -13,7 +13,7 @@ from keras_nerf.data.rays import RaysGenerator
 def main():
     parser = argparse.ArgumentParser()
     # NeRF Dataset Directory
-    parser.add_argument('--name', type=str, default='lego',
+    parser.add_argument('--name', type=str, default='',
                         help='Name of the nerf model')
 
     # NeRF Model Parameters
@@ -43,6 +43,9 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
 
     logging.info(args)
+
+    if args.name == '':
+        args.name = args.model_dirs.split('/')[-1]
 
     # Check if the model exists
     if not os.path.exists(os.path.join(args.model_dirs, f"coarse.h5")) or \
@@ -105,7 +108,7 @@ def main():
     for rays in tqdm(tf_ds_rays, total=360//args.output_freq, desc='Rendering Images'):
 
         _, fine_results = nerf_predictions(rays)
-        (fine_image, fine_depth, _) = fine_results
+        fine_image, fine_depth = fine_results['image'], fine_results['depth']
 
         images.append(fine_image.numpy()[0])
         depth.append(fine_depth.numpy()[0])

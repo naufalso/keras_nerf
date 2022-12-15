@@ -4,7 +4,11 @@ from keras_nerf.model.nerf.mlp import NeRFMLP
 
 
 def test_nerf_mlp():
-    nerf_mlp = NeRFMLP()
+    nerf_mlp = NeRFMLP(
+        n_layers=8,
+        dense_units=256,
+        skip_layer=4,
+    )
 
     POS_ENCODE_DIMS = 16
     SAMPLE_POINTS = 32
@@ -22,10 +26,20 @@ def test_nerf_mlp():
 
     rgb_out, sigma_out = nerf_mlp((ray_coordinate_inputs, direction_inputs))
 
-    nerf_mlp.summary()
+    model_params = nerf_mlp.get_config()
+
+    assert model_params['n_layers'] == 8
+    assert model_params['dense_units'] == 256
+    assert model_params['skip_layer'] == 4
+
+    assert rgb_out.shape == (2 * 100 * 100, SAMPLE_POINTS, 3)
+    assert sigma_out.shape == (2 * 100 * 100, SAMPLE_POINTS, 1)
 
     rgb_out = tf.reshape(rgb_out, (2, 100, 100, SAMPLE_POINTS, 3))
     sigma_out = tf.reshape(sigma_out, (2, 100, 100, SAMPLE_POINTS, 1))
 
     assert rgb_out.shape == (2, 100, 100, SAMPLE_POINTS, 3)
     assert sigma_out.shape == (2, 100, 100, SAMPLE_POINTS, 1)
+
+    assert tf.concat(nerf_mlp((ray_coordinate_inputs, direction_inputs)), axis=-1).shape == (
+        2 * 100 * 100, SAMPLE_POINTS, 4)

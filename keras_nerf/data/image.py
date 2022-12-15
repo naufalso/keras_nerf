@@ -30,5 +30,6 @@ class ImageLoader:
 
         image = alpha * image[..., :3] + (1.0 - alpha) * background
         image = tf.concat([image, alpha], axis=-1)
+        image = tf.clip_by_value(image, 0.0, 1.0)
 
         return image

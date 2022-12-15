@@ -6,7 +6,7 @@ from csv import DictWriter, DictReader
 
 
 class NeRFTrainMonitor(tf.keras.callbacks.Callback):
-    def __init__(self, dataset: tf.data.Dataset, log_dir: str, batch_size: int, update_freq: int = 1, **kwargs):
+    def __init__(self, dataset: tf.data.Dataset, log_dir: str, batch_size: int, update_freq: int = 1, verbose: bool = False, ** kwargs):
         super(NeRFTrainMonitor, self).__init__(**kwargs)
         logging.info('Initializing NeRFTrainMonitor')
         logging.info(
@@ -14,8 +14,8 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
         self.dataset = dataset
         self.log_dir = log_dir
         self.batch_size = batch_size
-
         self.update_freq = update_freq
+        self.verbose = verbose
 
         self.log_model_dir = os.path.join(log_dir, 'model')
         os.makedirs(self.log_model_dir, exist_ok=True)
@@ -24,6 +24,10 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
         self.val_coarse_log_list = []
         self.fine_log_list = []
         self.val_fine_log_list = []
+
+        if self.verbose:
+            self.coarse_log_list_batch = []
+            self.fine_log_list_batch = []
 
         # Read the last log file
         self.last_epoch = 0
@@ -55,17 +59,17 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
         self.dataset_iterator = iter(self.dataset)
         self.dataset_iterator.get_next()
 
-    def on_epoch_end(self, epoch, logs):
-        self.coarse_log_list.append(logs['coarse_loss'])
-        self.val_coarse_log_list.append(logs['val_coarse_loss'])
-        self.fine_log_list.append(logs['fine_loss'])
-        self.val_fine_log_list.append(logs['val_fine_loss'])
+    def on_train_batch_end(self, batch, logs=None):
+        if self.verbose:
+            logging.debug(f'Batch {batch}: {logs}')
+            self.coarse_log_list_batch.append(logs['coarse_loss'])
+            self.fine_log_list_batch.append(logs['fine_loss'])
 
-        if epoch % self.update_freq == 0:
             coarse_results, fine_results = self.model.predict_and_render_images(
                 (self.ray_origin, self.ray_direction, self.coarse_points))
-            (coarse_image, coarse_depth, _) = coarse_results
-            (fine_image, fine_depth, _) = fine_results
+
+            coarse_image, coarse_depth = coarse_results['image'], coarse_results['depth']
+            fine_image, fine_depth = fine_results['image'], fine_results['depth']
 
             # Plot the test images
             for i in range(self.batch_size):
@@ -78,7 +82,7 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
                 ax1.set_title('Coarse Image')
 
                 ax2 = fig.add_subplot(gs[0, 1])
-                ax2.imshow(coarse_depth[i])
+                ax2.imshow(coarse_depth[i], cmap='inferno')
                 ax2.set_title('Coarse Depth')
 
                 ax3 = fig.add_subplot(gs[0, 2])
@@ -86,7 +90,58 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
                 ax3.set_title('Fine Image')
 
                 ax4 = fig.add_subplot(gs[0, 3])
-                ax4.imshow(fine_depth[i])
+                ax4.imshow(fine_depth[i], cmap='inferno')
+                ax4.set_title('Fine Depth')
+
+                ax4 = fig.add_subplot(gs[0, 4])
+                ax4.imshow(self.images[i, ..., :3])
+                ax4.set_title('Ground Truth')
+
+                ax5 = fig.add_subplot(gs[1, :])
+                ax5.plot(self.coarse_log_list_batch, color='blue',
+                         label='Coarse Train Loss')
+                ax5.plot(self.fine_log_list_batch, color='orange',
+                         label='Fine Train Loss')
+                ax5.legend()
+                ax5.set_yscale('log')
+                ax5.set_title(f'Loss Batch Plot: {batch}')
+
+                plt.savefig(os.path.join(
+                    self.log_dir, f'debug_{i}_{batch}.png'))
+                plt.close()
+
+    def on_epoch_end(self, epoch, logs):
+        self.coarse_log_list.append(logs['coarse_loss'])
+        self.val_coarse_log_list.append(logs['val_coarse_loss'])
+        self.fine_log_list.append(logs['fine_loss'])
+        self.val_fine_log_list.append(logs['val_fine_loss'])
+
+        if epoch % self.update_freq == 0:
+            coarse_results, fine_results = self.model.predict_and_render_images(
+                (self.ray_origin, self.ray_direction, self.coarse_points))
+
+            coarse_image, coarse_depth = coarse_results['image'], coarse_results['depth']
+            fine_image, fine_depth = fine_results['image'], fine_results['depth']
+
+            # Plot the test images
+            for i in range(self.batch_size):
+                fig = plt.figure(figsize=(20, 10))
+                gs = fig.add_gridspec(2, 5)
+
+                ax1 = fig.add_subplot(gs[0, 0])
+                ax1.imshow(coarse_image[i])
+                ax1.set_title('Coarse Image')
+
+                ax2 = fig.add_subplot(gs[0, 1])
+                ax2.imshow(coarse_depth[i], cmap='inferno')
+                ax2.set_title('Coarse Depth')
+
+                ax3 = fig.add_subplot(gs[0, 2])
+                ax3.imshow(fine_image[i])
+                ax3.set_title('Fine Image')
+
+                ax4 = fig.add_subplot(gs[0, 3])
+                ax4.imshow(fine_depth[i], cmap='inferno')
                 ax4.set_title('Fine Depth')
 
                 ax4 = fig.add_subplot(gs[0, 4])
@@ -121,8 +176,9 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
 
             coarse_results, fine_results = self.model.predict_and_render_images(
                 (ray_origin, ray_direction, coarse_points))
-            (coarse_image, coarse_depth, _) = coarse_results
-            (fine_image, fine_depth, _) = fine_results
+
+            coarse_image, coarse_depth = coarse_results['image'], coarse_results['depth']
+            fine_image, fine_depth = fine_results['image'], fine_results['depth']
 
             for i in range(self.batch_size):
                 fig = plt.figure(figsize=(20, 5))
@@ -133,7 +189,7 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
                 ax1.set_title('Coarse Image')
 
                 ax2 = fig.add_subplot(gs[0, 1])
-                ax2.imshow(coarse_depth[i])
+                ax2.imshow(coarse_depth[i], cmap='inferno')
                 ax2.set_title('Coarse Depth')
 
                 ax3 = fig.add_subplot(gs[0, 2])
@@ -141,7 +197,7 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
                 ax3.set_title('Fine Image')
 
                 ax4 = fig.add_subplot(gs[0, 3])
-                ax4.imshow(fine_depth[i])
+                ax4.imshow(fine_depth[i], cmap='inferno')
                 ax4.set_title('Fine Depth')
 
                 ax5 = fig.add_subplot(gs[0, 4])
@@ -164,3 +220,7 @@ class NeRFTrainMonitor(tf.keras.callbacks.Callback):
             # Save the model
             self.model.save_model(self.log_model_dir,
                                   weights_only=(epoch != 0))
+
+        if self.verbose:
+            self.coarse_log_list_batch = []
+            self.fine_log_list_batch = []

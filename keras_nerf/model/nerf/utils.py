@@ -134,18 +134,6 @@ class NeRFUtils:
         return image, depth, weights
 
     @tf.function(reduce_retracing=True)
-    def positional_encoding(self, inputs, pos_embedding_dim):
-        # Include the original coordinate [x, y, z] (3 dims)
-        positions = [inputs]
-        # Add sin and cos positional encoding (2 * 3 * pos_embedding_dim)
-        for i in range(pos_embedding_dim):
-            for fn in [tf.sin, tf.cos]:
-                positions.append(fn(2.0 ** i * inputs))
-
-        # Output Shape: [..., 2 * 3 * pos_embedding_dim + 3]
-        return tf.concat(positions, axis=-1)
-
-    @tf.function(reduce_retracing=True)
     def fine_hierarchical_sampling(self, mid_points, weights, n_samples):
         # add a small value to the weights to prevent it from nan
         weights += 1e-5
@@ -184,6 +172,18 @@ class NeRFUtils:
 
         # return the samples
         return samples
+
+    @tf.function(reduce_retracing=True)
+    def positional_encoding(self, inputs, pos_embedding_dim):
+        # Include the original coordinate [x, y, z] (3 dims)
+        positions = [inputs]
+        # Add sin and cos positional encoding (2 * 3 * pos_embedding_dim)
+        for i in range(pos_embedding_dim):
+            for fn in [tf.sin, tf.cos]:
+                positions.append(fn(2.0 ** i * inputs))
+
+        # Output Shape: [..., 2 * 3 * pos_embedding_dim + 3]
+        return tf.concat(positions, axis=-1)
 
     @tf.function(reduce_retracing=True)
     def encode_position_and_directions(self, ray_origin, ray_direction, coarse_points):

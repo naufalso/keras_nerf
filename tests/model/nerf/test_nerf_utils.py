@@ -91,6 +91,25 @@ def test_encode_position_and_directions(nerf_utils, n_coarse, pos_embedding_xyz,
         2, 128, 128, n_coarse, 3 * 2 * pos_embedding_dir + 3)
 
 
+def test_encode_position_and_directions_chunk(nerf_utils, n_coarse, pos_embedding_xyz, pos_embedding_dir):
+    ray_origin = tf.random.uniform(shape=(2, 128, 128, 3))
+    ray_direction = tf.random.uniform(shape=(2, 128, 128, 3))
+    sample_points = tf.random.uniform(shape=(2, 128, 128, n_coarse))
+
+    ray_origin = tf.reshape(ray_origin, (-1, 3))
+    ray_direction = tf.reshape(ray_direction, (-1, 3))
+    sample_points = tf.reshape(sample_points, (-1, n_coarse))
+
+    # Encode the position and directions
+    pos_encoded_rays, pos_encoded_directions = nerf_utils.encode_position_and_directions(
+        ray_origin, ray_direction, sample_points)
+
+    assert pos_encoded_rays.shape == (
+        2 * 128 * 128, n_coarse, 3 * 2 * pos_embedding_xyz + 3)
+    assert pos_encoded_directions.shape == (
+        2 * 128 * 128, n_coarse, 3 * 2 * pos_embedding_dir + 3)
+
+
 def test_render_image_depth_chunk(nerf_utils, n_coarse):
     # Generate random rgb, sigma, and points
     rgb = tf.random.uniform(shape=(1024, n_coarse, 3))

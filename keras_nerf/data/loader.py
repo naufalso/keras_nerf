@@ -100,9 +100,9 @@ class DatasetLoader:
             tf_dataset = tf.data.Dataset.zip((tf_ds_images, tf_ds_rays))
             tf_dataset = (
                 tf_dataset
-                .repeat()
+                # .repeat()
                 .shuffle(batch_size)
-                .batch(batch_size)
+                .batch(batch_size, drop_remainder=True)
                 .prefetch(tf.data.experimental.AUTOTUNE)
             )
 

@@ -11,9 +11,12 @@ tf.random.set_seed(42)
 
 
 def main():
+    # Tune --ray_chunks to fit your GPU memory
+
     # Tested on DGX Station Tesla V100 32GB
     # --img_wh 128 --ray_chunks 2048 -> Verified (3s per step)
     # --eagerly --img_wh 128 --ray_chunks 4096 -> Verified (2s per step)
+    # --eagerly --img_wh 128 --ray_chunks 4096 --batch_size 4 -> Verified (11s per step)
     # --eagerly --img_wh 512 --ray_chunks 4096: larger ray_chunks will cause OOM
 
     parser = argparse.ArgumentParser()
@@ -39,11 +42,8 @@ def main():
     parser.add_argument('--white_bg', action='store_true')
 
     # NeRF Training Parameters
-    parser.add_argument('--steps_per_epoch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=250)
     parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--num_gpus', type=int, default=1)
     parser.add_argument('--ray_chunks', type=int, default=2048)
     parser.add_argument('--eagerly', action='store_true')
 
@@ -55,8 +55,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Set up logging
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO, format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+        level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s (%(filename)s:%(lineno)d)"
+    )
 
     logging.info(args)
 
@@ -94,6 +96,7 @@ def main():
         model_path = None
 
     tf.keras.backend.clear_session()
+    tf.config.run_functions_eagerly(args.eagerly and args.verbose)
 
     nerf = NeRF(
         n_coarse=args.num_coarse_samples,
@@ -111,7 +114,8 @@ def main():
         dataset=test_dataset,
         log_dir=os.path.join(args.log_dir, args.name),
         batch_size=args.batch_size,
-        update_freq=args.log_freq
+        update_freq=args.log_freq,
+        verbose=args.verbose
     )
 
     last_epoch = nerf_train_monitor.last_epoch
@@ -119,7 +123,6 @@ def main():
 
     # Compile the model
     nerf.compile(
-        # tf.keras.optimizers.Adam(learning_rate=args.lr),
         optimizer='adam',
         loss=tf.keras.losses.MeanSquaredError(),
         batch_size=args.batch_size,
@@ -133,10 +136,8 @@ def main():
     # Train the model
     nerf.fit(
         train_dataset,
-        steps_per_epoch=args.steps_per_epoch,
         epochs=args.num_epochs,
         validation_data=val_dataset,
-        validation_steps=args.steps_per_epoch // 5,
         callbacks=[nerf_train_monitor],
         initial_epoch=last_epoch
     )

@@ -11,11 +11,11 @@ tf.random.set_seed(42)
 
 
 def main():
+    # Tune --ray_chunks to fit your GPU memory
+
     # Tested on multiple DGX Station Tesla V100 32GB
-    # --img_wh 128 --ray_chunks 1024 -> Verified (2 GPUs, 5~6s per step)
     # --img_wh 128 --ray_chunks 2048 -> Verified (2 GPUs, 5~6s per step)
-    # --eagerly --img_wh 128 --ray_chunks 4096 -> Verified (2 GPUs, 4~5s per step) but GPU will work sequentially
-    # --eagerly --img_wh 128 --ray_chunks 8192 -> OOM Verified (2 GPUs)
+
     parser = argparse.ArgumentParser()
     # NeRF Dataset Directory
     parser.add_argument('--name', type=str, default='lego',
@@ -39,13 +39,11 @@ def main():
     parser.add_argument('--white_bg', action='store_true')
 
     # NeRF Training Parameters
-    parser.add_argument('--steps_per_epoch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=250)
     parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_gpus', type=int, default=1)
     parser.add_argument('--ray_chunks', type=int, default=1024)
-    parser.add_argument('--eagerly', action='store_true')
+    # parser.add_argument('--eagerly', action='store_true') # Eager execution on multi GPU training is currently not effective (The execution is done sequentially for each GPU)
 
     # NeRF Logging Parameters
     parser.add_argument('--model_dirs', type=str, default='model')
@@ -145,17 +143,15 @@ def main():
             image_width=args.img_wh,
             image_height=args.img_wh,
             ray_chunks=args.ray_chunks,
-            run_eagerly=args.eagerly,
+            # run_eagerly=args.eagerly,
             white_background=args.white_bg
         )
 
     # Train the model
     nerf.fit(
         train_dataset,
-        steps_per_epoch=args.steps_per_epoch,
         epochs=args.num_epochs,
         validation_data=val_dataset,
-        validation_steps=args.steps_per_epoch // 5,
         callbacks=[nerf_train_monitor],
         initial_epoch=last_epoch
     )
