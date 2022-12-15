@@ -9,8 +9,8 @@ from keras_nerf.data.rays import RaysGenerator
 def rays_generator():
     return RaysGenerator(
         focal_length=138.88887889922103,
-        image_width=100,
-        image_height=100,
+        image_width=128,
+        image_height=128,
         near=2.0,
         far=6.0,
         n_sample=32
@@ -48,16 +48,40 @@ def camera_params():
 
 
 def test_ray_generator_output_shape(rays_generator, camera_params):
-    ray_origin, ray_direction, sample_points = rays_generator(camera_params)
-    assert ray_origin.shape == (100, 100, 3)
-    assert ray_direction.shape == (100, 100, 3)
-    assert sample_points.shape == (100, 100, 32)
+    last_ray_origin = None
+    last_ray_direction = None
+    last_sample_points = None
 
-    assert ray_origin.dtype == tf.float32
-    assert ray_direction.dtype == tf.float32
-    assert sample_points.dtype == tf.float32
+    for i in range(4):
+        ray_origin, ray_direction, sample_points = rays_generator(
+            camera_params)
 
-    rays = (ray_origin[..., None, :] +
-            ray_direction[..., None, :] * sample_points[..., None])
+        assert np.isnan(ray_origin).sum() == 0
+        assert np.isnan(ray_direction).sum() == 0
+        assert np.isnan(sample_points).sum() == 0
 
-    assert rays.shape == (100, 100, 32, 3)
+        assert ray_origin.shape == (128, 128, 3)
+        assert ray_direction.shape == (128, 128, 3)
+        assert sample_points.shape == (128, 128, 32)
+
+        assert ray_origin.dtype == tf.float32
+        assert ray_direction.dtype == tf.float32
+        assert sample_points.dtype == tf.float32
+
+        if last_sample_points is not None:
+            assert np.allclose(last_ray_origin, ray_origin)
+            assert np.allclose(last_ray_direction, ray_direction)
+            assert np.allclose(last_sample_points,
+                               sample_points, atol=(4.0 / 32.0))
+
+        assert np.min(sample_points) >= 2.0 - (4.0 / 32.0) and np.max(
+            sample_points) <= 6.0 + (4.0 / 32.0)
+
+        rays = (ray_origin[..., None, :] +
+                ray_direction[..., None, :] * sample_points[..., None])
+
+        assert rays.shape == (128, 128, 32, 3)
+
+        last_ray_origin = ray_origin.numpy().copy()
+        last_ray_direction = ray_direction.numpy().copy()
+        last_sample_points = sample_points.numpy().copy()

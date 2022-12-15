@@ -1,0 +1,6 @@
+tqdm
+tensorflow>=2.9
+imageio
+numpy
+matplotlib
+imageio-ffmpeg
